@@ -56,7 +56,7 @@ def load_seed_window() -> pd.DataFrame:
 
     seed = df_feat.tail(SEQUENCE_LENGTH).copy().reset_index(drop=True)
     logger.info(
-        f"Seed window: {seed[TIMESTAMP_COL].iloc[0]} → "
+        f"Seed window: {seed[TIMESTAMP_COL].iloc[0]} -> "
         f"{seed[TIMESTAMP_COL].iloc[-1]}"
     )
     return seed
@@ -143,21 +143,22 @@ def run_rolling_prediction(seed: pd.DataFrame,
 
         # Update rolling window
         try:
-            raw_cols     = [TIMESTAMP_COL, "co2_ppm", "temperature_c", "humidity_percent"]
-            tail_raw     = window[raw_cols].tail(SEQUENCE_LENGTH)
-            new_raw      = pd.DataFrame(new_raw_rows)
-            combined_raw = pd.concat([tail_raw, new_raw], ignore_index=True)
+            raw_cols      = [TIMESTAMP_COL, "co2_ppm", "temperature_c", "humidity_percent"]
+            tail_raw      = window[raw_cols].tail(SEQUENCE_LENGTH)
+            new_raw       = pd.DataFrame(new_raw_rows)
+            combined_raw  = pd.concat([tail_raw, new_raw], ignore_index=True)
             combined_feat = build_features(combined_raw, drop_nan=False)
-            new_feat     = combined_feat.tail(hours_added).copy()
+            new_feat      = combined_feat.tail(hours_added).copy()
 
             for col in feat_cols:
                 if col not in new_feat.columns:
                     new_feat[col] = 0.0
 
+            # FIX BUG 3: Use .ffill().bfill() instead of deprecated fillna(method=...)
             new_feat[feat_cols] = (
                 new_feat[feat_cols]
-                .fillna(method="ffill")
-                .fillna(method="bfill")
+                .ffill()
+                .bfill()
                 .fillna(0.0)
             )
 
@@ -172,11 +173,21 @@ def run_rolling_prediction(seed: pd.DataFrame,
             filler[TIMESTAMP_COL] = [current_dt + timedelta(hours=h) for h in range(hours_added)]
             window = pd.concat([window.iloc[hours_added:], filler], ignore_index=True)
 
+        # FIX BUG 4: Guard against window shrinking below SEQUENCE_LENGTH
+        if len(window) < SEQUENCE_LENGTH:
+            pad_needed = SEQUENCE_LENGTH - len(window)
+            pad = pd.concat([window.iloc[:1]] * pad_needed, ignore_index=True)
+            window = pd.concat([pad, window], ignore_index=True)
+            logger.warning(f"  Block {block+1}: window padded back to {SEQUENCE_LENGTH} rows.")
+
         current_dt += timedelta(hours=hours_added)
 
         if (block + 1) % 7 == 0 or block == 0:
             pct = min(100.0, round((block + 1) / total_blocks * 100, 1))
-            logger.info(f"  [{pct:5.1f}%] Block {block+1}/{total_blocks} | Up to: {(current_dt - timedelta(hours=1)).strftime('%Y-%m-%d %H:%M')}")
+            logger.info(
+                f"  [{pct:5.1f}%] Block {block+1}/{total_blocks} | "
+                f"Up to: {(current_dt - timedelta(hours=1)).strftime('%Y-%m-%d %H:%M')}"
+            )
 
     logger.info(f"Generated {len(all_hourly):,} hourly rows.")
     return pd.DataFrame(all_hourly)
@@ -187,7 +198,7 @@ def run_rolling_prediction(seed: pd.DataFrame,
 # ============================================================================
 
 def aggregate_daily(df_hourly: pd.DataFrame) -> pd.DataFrame:
-    df       = df_hourly.copy()
+    df         = df_hourly.copy()
     df["date"] = pd.to_datetime(df["timestamp"]).dt.date
     ref_date   = pd.Timestamp("2025-01-01")
     rows       = []
@@ -215,7 +226,7 @@ def aggregate_daily(df_hourly: pd.DataFrame) -> pd.DataFrame:
             "prediction_confidence_pct": round(confidence, 1),
         })
 
-    df_daily = pd.DataFrame(rows)
+    df_daily         = pd.DataFrame(rows)
     df_daily["date"] = pd.to_datetime(df_daily["date"])
     return df_daily.sort_values("date").reset_index(drop=True)
 
@@ -281,7 +292,7 @@ def run_prediction(start_date="2025-01-01", end_date="2026-06-30",
     logger.info("=" * 70)
     logger.info("CLIMATE FUTURE PREDICTION")
     logger.info("=" * 70)
-    logger.info(f"Period  : {start_date} → {end_date}")
+    logger.info(f"Period  : {start_date} -> {end_date}")
     logger.info(f"Targets : {TARGET_COLS}")
 
     start_dt = datetime.strptime(start_date, "%Y-%m-%d")
@@ -290,7 +301,7 @@ def run_prediction(start_date="2025-01-01", end_date="2026-06-30",
     seed      = load_seed_window()
     df_hourly = run_rolling_prediction(seed, start_dt, end_dt)
 
-    logger.info("Aggregating hourly → daily...")
+    logger.info("Aggregating hourly -> daily...")
     df_daily    = aggregate_daily(df_hourly)
     df_accuracy = build_accuracy_summary(df_daily)
 
@@ -301,8 +312,8 @@ def run_prediction(start_date="2025-01-01", end_date="2026-06-30",
     hourly_path   = out / "predictions_hourly_2025_2026.csv"
     accuracy_path = out / "predictions_accuracy_summary.csv"
 
-    df_daily.to_csv(daily_path,       index=False)
-    df_hourly.to_csv(hourly_path,     index=False)
+    df_daily.to_csv(daily_path,    index=False)
+    df_hourly.to_csv(hourly_path,  index=False)
     df_accuracy.to_csv(accuracy_path, index=False)
 
     logger.info("\n" + "=" * 70)
@@ -310,9 +321,9 @@ def run_prediction(start_date="2025-01-01", end_date="2026-06-30",
     logger.info("=" * 70)
     logger.info(f"  Days    : {len(df_daily):,}")
     logger.info(f"  Hours   : {len(df_hourly):,}")
-    logger.info(f"  CO2     : {df_daily['co2_ppm_min'].min():.1f} – {df_daily['co2_ppm_max'].max():.1f} ppm")
-    logger.info(f"  Temp    : {df_daily['temperature_c_min'].min():.1f} – {df_daily['temperature_c_max'].max():.1f} °C")
-    logger.info(f"  Humidity: {df_daily['humidity_percent_min'].min():.1f} – {df_daily['humidity_percent_max'].max():.1f} %")
+    logger.info(f"  CO2     : {df_daily['co2_ppm_min'].min():.1f} - {df_daily['co2_ppm_max'].max():.1f} ppm")
+    logger.info(f"  Temp    : {df_daily['temperature_c_min'].min():.1f} - {df_daily['temperature_c_max'].max():.1f} C")
+    logger.info(f"  Humidity: {df_daily['humidity_percent_min'].min():.1f} - {df_daily['humidity_percent_max'].max():.1f} %")
     logger.info(f"\n  Files saved to: {out}")
     logger.info("=" * 70)
 

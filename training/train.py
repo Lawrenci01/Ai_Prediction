@@ -212,25 +212,31 @@ def get_model_key(prefix: str, target: str) -> str:
 
 
 # ============================================================================
-# LSTM TRAINING
+# LSTM TRAINING — crash protection + resume
 # ============================================================================
 
 def train_lstm_model(df_featured, feature_cols, target,
                      force_retrain=False, bidirectional=False) -> dict:
+    # FIX: import tf here so we can use it for resume loading
     try:
+        import tensorflow as tf
         from app.model.lstm import build_lstm_model, get_callbacks
     except ImportError:
         logger.warning("TensorFlow not installed. Skipping LSTM.")
         return {}
 
     logger.info(f"\n--- LSTM for {target} (bidirectional={bidirectional}) ---")
-    lstm_key = get_model_key("lstm", target)
+    lstm_key  = get_model_key("lstm", target)
+    ckpt_path = Path(get_model_path(lstm_key))
 
     if not force_retrain and is_keras_model_valid(lstm_key):
         logger.info("  [SKIP] LSTM already valid. Use --force-retrain to override.")
         return {}
 
-    delete_model(lstm_key)
+    # FIX BUG 1: Only wipe checkpoint when explicitly force-retraining.
+    # Old code always called delete_model() here, which prevented resume.
+    if force_retrain:
+        delete_model(lstm_key)
 
     seq_data    = build_sequences_for_target(df_featured, feature_cols, target, fit=True)
     X_train     = seq_data["X_train"]
@@ -247,26 +253,53 @@ def train_lstm_model(df_featured, feature_cols, target,
         f"val: {len(X_val):,}, test: {len(X_test):,}"
     )
 
-    model = build_lstm_model(input_shape, target, bidirectional=bidirectional)
+    # RESUME: if a checkpoint exists from a previous crashed run, reload it
+    if ckpt_path.exists() and not force_retrain:
+        logger.info(f"  [RESUME] Reloading checkpoint: {ckpt_path.name}")
+        model = tf.keras.models.load_model(str(ckpt_path))
+    else:
+        model = build_lstm_model(input_shape, target, bidirectional=bidirectional)
 
     logger.info(f"  Training (max {EPOCHS} epochs, batch {BATCH_SIZE})...")
-    t0      = time.time()
-    history = model.fit(
-        X_train, y_train,
-        validation_data=(X_val, y_val),
-        epochs=EPOCHS,
-        batch_size=BATCH_SIZE,
-        callbacks=get_callbacks(target),
-        verbose=1,
-    )
+    t0 = time.time()
+
+    # FIX BUG 2: Wrap fit() — save whatever was trained if a crash occurs
+    history = None
+    try:
+        history = model.fit(
+            X_train, y_train,
+            validation_data=(X_val, y_val),
+            epochs=EPOCHS,
+            batch_size=BATCH_SIZE,
+            callbacks=get_callbacks(target),
+            verbose=1,
+        )
+    except KeyboardInterrupt:
+        logger.warning("  [INTERRUPTED] Ctrl+C — saving current weights...")
+        model.save(str(ckpt_path))
+        logger.info(f"  Saved to {ckpt_path.name}. Re-run WITHOUT --force-retrain to resume.")
+        return {}
+    except Exception as e:
+        logger.error(f"  [CRASH] Training error: {e}")
+        try:
+            model.save(str(ckpt_path))
+            logger.info(f"  Emergency save to {ckpt_path.name}. Re-run WITHOUT --force-retrain to resume.")
+        except Exception as save_err:
+            logger.error(f"  Emergency save failed: {save_err}")
+        raise
+
     elapsed = time.time() - t0
+
+    # Reload best checkpoint saved by ModelCheckpoint (not necessarily last epoch)
+    if ckpt_path.exists():
+        model = tf.keras.models.load_model(str(ckpt_path))
 
     y_pred_scaled = model.predict(X_test, verbose=0)
     n, h   = y_pred_scaled.shape
     y_pred = scaler_y.inverse_transform(y_pred_scaled.reshape(-1, 1)).reshape(n, h)
     y_true = scaler_y.inverse_transform(y_test.reshape(-1, 1)).reshape(n, h)
 
-    epochs_trained = len(history.history["loss"])
+    epochs_trained = len(history.history["loss"]) if history else 0
     m = compute_all_metrics(
         y_true, y_pred, "LSTM", target, elapsed,
         extra={"epochs_trained": epochs_trained}
