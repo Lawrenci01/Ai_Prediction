@@ -1,0 +1,89 @@
+name: Monthly Retrain
+
+on:
+  schedule:
+    - cron: "0 2 28 * *"
+  workflow_dispatch:
+    inputs:
+      evaluate_only:
+        description: "Only evaluate models, skip retraining"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+jobs:
+  retrain:
+    name: Monthly Model Retrain
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    env:
+      DATABASE_URL:    ${{ secrets.DATABASE_URL }}
+      GROQ_API_KEY:    ${{ secrets.GROQ_API_KEY }}
+      DB_HOST:         ${{ secrets.DB_HOST }}
+      DB_PORT:         ${{ secrets.DB_PORT }}
+      DB_NAME:         ${{ secrets.DB_NAME }}
+      DB_USER:         ${{ secrets.DB_USER }}
+      DB_PASS:         ${{ secrets.DB_PASS }}
+      MODEL_DIR:       ${{ vars.MODEL_DIR }}
+      DATA_FILE:       ${{ vars.DATA_FILE }}
+      MIN_NEW_ROWS:    ${{ vars.MIN_NEW_ROWS }}
+      RETRAIN_DAY:     ${{ vars.RETRAIN_DAY }}
+      RETRAIN_HOUR:    ${{ vars.RETRAIN_HOUR }}
+      RETRAIN_MINUTE:  ${{ vars.RETRAIN_MINUTE }}
+      LLM_BACKEND:     ${{ vars.LLM_BACKEND }}
+      GROQ_MODEL:      ${{ vars.GROQ_MODEL }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run retrain scheduler
+        run: |
+          if [ "${{ github.event.inputs.evaluate_only }}" == "true" ]; then
+            echo "Running in evaluate-only mode..."
+            python retrain_scheduler.py --evaluate-only
+          else
+            echo "Running full retrain with accumulated data..."
+            python retrain_scheduler.py --run-now
+          fi
+
+      - name: Commit retrain history
+        if: success()
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add saved_models/retrain_history.csv || true
+          git diff --cached --quiet || git commit -m "chore: update retrain history [$(date -u '+%Y-%m-%d')]"
+          git push || echo "Nothing to push"
+
+      - name: Upload retrain artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: retrain-results-${{ github.run_id }}
+          path: |
+            saved_models/retrain_history.csv
+            saved_models/*.keras
+            saved_models/*.pkl
+            logs/
+          retention-days: 30
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "::error::Monthly retrain FAILED on $(date -u '+%Y-%m-%d %H:%M UTC')"
