@@ -19,10 +19,11 @@ DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = os.getenv("DB_PORT", "3306")
 DB_NAME = os.getenv("DB_NAME", "iot_db")
 DB_USER = os.getenv("DB_USER", "root")
-DB_PASS = os.getenv("DB_PASS", "")
+DB_PASS = os.getenv("DB_PASS") or os.getenv("DB_PASSWORD", "")  # supports both
 
 DATABASE_URL = (
     f"mysql+aiomysql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+    "?ssl=true"  # Aiven requires SSL
 )
 
 engine = create_async_engine(
