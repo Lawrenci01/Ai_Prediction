@@ -45,7 +45,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(
 
 SCHEDULER_HOUR   = int(os.getenv("SCHEDULER_HOUR")   or "1")
 SCHEDULER_MINUTE = int(os.getenv("SCHEDULER_MINUTE") or "0")
-DATA_FETCH_HOURS = int(os.getenv("DATA_FETCH_HOURS", "336"))
+DATA_FETCH_HOURS = int(os.getenv("DATA_FETCH_HOURS") or "336")
 LLM_BACKEND      = os.getenv("LLM_BACKEND", "groq")
 
 # Model target names (what model outputs)
