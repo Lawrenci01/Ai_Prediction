@@ -15,8 +15,11 @@ Endpoints:
     GET  /api/sensor/latest               → latest raw IoT readings
     POST /api/predict/run-now             → trigger prediction manually
     GET  /api/status                      → model + DB status
+    GET  /api/realtime/insight            → live city-wide insight (5-min cache)
+    GET  /api/realtime/insight/history    → last N realtime snapshots
 """
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -42,6 +45,7 @@ from app.database.repository import (
 from app.database.models import (
     Sensor, Barangay, DailyPrediction, HourlyPrediction, PredictionInsight
 )
+from app.report.realtime_insight import router as realtime_router, start_realtime_loop
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
@@ -62,20 +66,31 @@ async def lifespan(app: FastAPI):
     logger.info("✅ DB tables ready")
     await check_connection()
 
-    # Start daily prediction scheduler as background task
-    import asyncio
+    # Start daily prediction scheduler
     from app.scheduler.daily_scheduler import scheduler_loop
     scheduler_task = asyncio.create_task(scheduler_loop())
-    logger.info("Daily prediction scheduler started in background")
+    logger.info("✅ Daily prediction scheduler started")
+
+    # Start realtime insight loop (runs every 5 minutes)
+    realtime_task = asyncio.create_task(start_realtime_loop())
+    logger.info("✅ Realtime insight loop started")
 
     yield
 
     # Graceful shutdown
     scheduler_task.cancel()
+    realtime_task.cancel()
+
     try:
         await scheduler_task
     except asyncio.CancelledError:
-        logger.info("Scheduler stopped cleanly")
+        logger.info("Daily scheduler stopped cleanly")
+
+    try:
+        await realtime_task
+    except asyncio.CancelledError:
+        logger.info("Realtime loop stopped cleanly")
+
     await engine.dispose()
 
 
@@ -93,6 +108,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Realtime insight router
+app.include_router(realtime_router)
 
 
 # ============================================================================
@@ -186,7 +204,7 @@ async def get_latest(
             "mean": row.mean_value,
             "min":  row.min_value,
             "max":  row.max_value,
-            "id":   row.id,       # use for /hourly endpoint
+            "id":   row.id,
         }
     return grouped
 
