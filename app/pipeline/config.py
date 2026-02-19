@@ -39,9 +39,10 @@ TRAIN_SPLIT        = 0.80  # 80% train | 10% val | 10% test
 # ============================================================================
 
 EPOCHS        = 200
-BATCH_SIZE    = 64       # 2x faster than 32, no accuracy loss
+BATCH_SIZE    = 128      # 2x faster than 64, minimal accuracy tradeoff
 LEARNING_RATE = 0.0003   # stable convergence
-PATIENCE      = 20       # EarlyStopping patience (epochs)
+PATIENCE      = 15       # enough chances to improve, cuts dead time
+
 
 # ============================================================================
 # LSTM ARCHITECTURE

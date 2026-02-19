@@ -1,0 +1,33 @@
+# Environment
+.env
+*.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Logs
+logs/
+*.log
+
+# Model backups (keep main models, ignore backups)
+saved_models/backups/
+saved_models/retrain_temp.csv
+
+# Local tools
+predict_day.py
+db_predict.py
+ecosystem.config.js
+
+# VS Code
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db

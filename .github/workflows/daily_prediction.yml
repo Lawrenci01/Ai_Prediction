@@ -1,0 +1,76 @@
+name: Daily Prediction
+
+on:
+  schedule:
+    - cron: "0 1 * * *"   # Every day at 1:00 AM UTC
+  workflow_dispatch:        # Allow manual trigger from GitHub UI
+
+jobs:
+  predict:
+    name: Run Daily Prediction
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      # --- Secrets (sensitive) ---
+      DATABASE_URL:     ${{ secrets.DATABASE_URL }}
+      GROQ_API_KEY:     ${{ secrets.GROQ_API_KEY }}
+
+      # --- Variables (non-sensitive config) ---
+      MODEL_DIR:        ${{ vars.MODEL_DIR }}
+      DATA_FILE:        ${{ vars.DATA_FILE }}
+      DATA_FETCH_HOURS: ${{ vars.DATA_FETCH_HOURS }}
+      LLM_BACKEND:      ${{ vars.LLM_BACKEND }}
+      GROQ_MODEL:       ${{ vars.GROQ_MODEL }}
+      SCHEDULER_HOUR:   ${{ vars.SCHEDULER_HOUR }}
+      SCHEDULER_MINUTE: ${{ vars.SCHEDULER_MINUTE }}
+
+    steps:
+      # ------------------------------------------------------------------ #
+      # 1. Checkout repo
+      # ------------------------------------------------------------------ #
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ------------------------------------------------------------------ #
+      # 2. Set up Python 3.11
+      # ------------------------------------------------------------------ #
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      # ------------------------------------------------------------------ #
+      # 3. Install dependencies
+      # ------------------------------------------------------------------ #
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ------------------------------------------------------------------ #
+      # 4. Run daily prediction
+      # ------------------------------------------------------------------ #
+      - name: Run daily prediction
+        run: |
+          python -m app.scheduler.daily_scheduler --run-now
+
+      # ------------------------------------------------------------------ #
+      # 5. Upload logs as artifact (for inspection)
+      # ------------------------------------------------------------------ #
+      - name: Upload prediction logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prediction-logs-${{ github.run_id }}
+          path: logs/
+          retention-days: 7
+
+      # ------------------------------------------------------------------ #
+      # 6. Notify on failure
+      # ------------------------------------------------------------------ #
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "::error::Daily prediction FAILED on $(date -u '+%Y-%m-%d %H:%M UTC')"

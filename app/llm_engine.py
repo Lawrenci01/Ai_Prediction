@@ -19,7 +19,6 @@ Set in .env:
 
 import logging
 import os
-from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -42,7 +41,6 @@ GROQ_MODEL   = os.getenv("GROQ_MODEL",   "llama-3.3-70b-versatile")
 # ============================================================================
 
 def heat_index(temp_c: float, humidity: float) -> float:
-    """Rothfusz heat index — feels like temperature in Celsius."""
     try:
         t  = temp_c * 9 / 5 + 32
         rh = humidity
@@ -61,7 +59,6 @@ def heat_index(temp_c: float, humidity: float) -> float:
 
 
 def discomfort_index(temp_c: float, humidity: float) -> float:
-    """Thom's discomfort index."""
     try:
         return temp_c - 0.55 * (1 - humidity / 100) * (temp_c - 14.5)
     except Exception:
@@ -84,139 +81,62 @@ def co2_risk_level(co2_ppm: float) -> str:
     return "critically high — immediate action needed"
 
 
+def comfort_label(hi: float) -> str:
+    if hi < 27:  return "comfortable"
+    if hi < 32:  return "caution"
+    if hi < 41:  return "extreme caution"
+    if hi < 54:  return "danger"
+    return "extreme danger"
+
+
 # ============================================================================
-# PROMPT BUILDERS
+# PROMPT BUILDER
 # ============================================================================
 
-def _build_prompt(sensor: dict,
-                  current: dict,
-                  predicted: dict,
-                  hours_ahead: int) -> str:
+def _build_insight_prompt(sensor: dict,
+                           predicted: dict,
+                           peak_temp_hour: int,
+                           peak_co2_hour: int) -> str:
 
-    sensor_id     = sensor.get("sensor_id", "?")
-    barangay      = sensor.get("barangay", "unknown").title()
-    establishment = sensor.get("establishment", "unknown").title()
+    sensor_id = sensor.get("sensor_id", "NODE-01")
+    barangay  = sensor.get("barangay", "Naga").title()
 
-    temp_now  = float(current.get("temperature_c",    28.0))
-    hum_now   = float(current.get("humidity_percent", 75.0))
-    co2_now   = float(current.get("co2_ppm",          415.0))
-
+    co2_pred  = float(predicted.get("co2_ppm",          415.0))
     temp_pred = float(predicted.get("temperature_c",    28.0))
     hum_pred  = float(predicted.get("humidity_percent", 75.0))
-    co2_pred  = float(predicted.get("co2_ppm",          415.0))
+    hi_pred   = heat_index(temp_pred, hum_pred)
+    co2_risk  = co2_risk_level(co2_pred)
+    comfort   = comfort_label(hi_pred)
 
-    hi_now  = heat_index(temp_now,  hum_now)
-    hi_pred = heat_index(temp_pred, hum_pred)
-    di_now  = discomfort_index(temp_now,  hum_now)
-    di_pred = discomfort_index(temp_pred, hum_pred)
+    # Determine worst condition to drive recommendation
+    if co2_pred >= 440:
+        recommendation = "immediately improve ventilation and reduce indoor occupancy"
+    elif co2_pred >= 420:
+        recommendation = "open windows and increase ventilation especially during peak CO2 hours"
+    elif hi_pred >= 41:
+        recommendation = "avoid all outdoor activities during peak heat and ensure cooling"
+    elif hi_pred >= 32:
+        recommendation = "limit outdoor exposure during midday and stay hydrated"
+    elif hum_pred >= 90:
+        recommendation = "ensure proper airflow in enclosed spaces to reduce moisture"
+    else:
+        recommendation = "no major concerns today, maintain normal ventilation"
 
-    temp_delta = temp_pred - temp_now
-    hum_delta  = hum_pred  - hum_now
-    co2_delta  = co2_pred  - co2_now
+    return f"""You are a climate monitoring AI for IoT sensors in Naga City, Philippines.
 
-    hour_of_day = (datetime.now().hour + hours_ahead) % 24
-    time_of_day = (
-        "early morning" if 5  <= hour_of_day < 9  else
-        "mid-morning"   if 9  <= hour_of_day < 12 else
-        "afternoon"     if 12 <= hour_of_day < 17 else
-        "evening"       if 17 <= hour_of_day < 21 else
-        "nighttime"
-    )
+Write exactly ONE sentence using ONLY these predicted values:
 
-    return f"""You are an environmental monitoring AI analyst for IoT climate sensors in Manila, Philippines.
+PREDICTED VALUES (use these exact numbers):
+- Sensor: {sensor_id} in {barangay}
+- CO2: {co2_pred:.0f} ppm ({co2_risk})
+- Temperature peak: {temp_pred:.1f}°C at {peak_temp_hour:02d}:00 (feels like {hi_pred:.1f}°C — {comfort})
+- Humidity: {hum_pred:.0f}%
+- Recommended action: {recommendation}
 
-SENSOR INFORMATION:
-- Node ID: {sensor_id}
-- Location: {establishment}, Barangay {barangay}, Manila
+REQUIRED OUTPUT FORMAT (fill in the brackets with the values above):
+"{sensor_id} in {barangay}: CO2 is at {co2_pred:.0f} ppm ({co2_risk}), temperature peaks at {temp_pred:.1f}°C at {peak_temp_hour:02d}:00 (feels like {hi_pred:.1f}°C — {comfort}), and humidity is at {hum_pred:.0f}% — {recommendation}."
 
-CURRENT READINGS:
-- Temperature: {temp_now:.1f}°C (feels like {hi_now:.1f}°C)
-- Humidity: {hum_now:.0f}%
-- CO2: {co2_now:.0f} ppm ({co2_risk_level(co2_now)})
-- Discomfort Index: {di_now:.1f}
-
-PREDICTED READINGS (in {hours_ahead} hours — {time_of_day}):
-- Temperature: {temp_pred:.1f}°C (feels like {hi_pred:.1f}°C, change: {temp_delta:+.1f}°C)
-- Humidity: {hum_pred:.0f}% (change: {hum_delta:+.1f}%)
-- CO2: {co2_pred:.0f} ppm ({co2_risk_level(co2_pred)}, change: {co2_delta:+.1f} ppm)
-- Discomfort Index: {di_pred:.1f} (change: {di_pred - di_now:+.1f})
-
-TASK:
-Write exactly 2 sentences as a climate insight for this sensor location.
-
-Sentence 1: Describe what the sensor is currently detecting and where conditions are heading over the next {hours_ahead} hours. Be specific — mention actual values and trends.
-
-Sentence 2: Reason about what this combination of changes means for people at {establishment} and give one clear, specific, actionable recommendation.
-
-Rules:
-- Use natural, professional language
-- Reference the specific location ({establishment}, Brgy. {barangay}) and Node {sensor_id}
-- Do NOT use bullet points, headers, or lists
-- Do NOT start with "I" or "The sensor"
-- Output only the 2 sentences, nothing else
-"""
-
-
-def _build_forecast_prompt(sensor: dict,
-                            current: dict,
-                            forecast_series: list) -> str:
-
-    sensor_id     = sensor.get("sensor_id", "?")
-    barangay      = sensor.get("barangay", "unknown").title()
-    establishment = sensor.get("establishment", "unknown").title()
-
-    temps = [float(f.get("temperature_c",    0)) for f in forecast_series]
-    hums  = [float(f.get("humidity_percent", 0)) for f in forecast_series]
-    co2s  = [float(f.get("co2_ppm",          0)) for f in forecast_series]
-    hours = [f.get("hour", i + 1) for i, f in enumerate(forecast_series)]
-
-    max_temp      = max(temps)
-    min_temp      = min(temps)
-    max_co2       = max(co2s)
-    max_hum       = max(hums)
-    max_temp_hour = hours[temps.index(max_temp)]
-    max_co2_hour  = hours[co2s.index(max_co2)]
-
-    stress_scores = [heat_index(t, h) + (c / 100) for t, h, c in zip(temps, hums, co2s)]
-    worst_idx     = stress_scores.index(max(stress_scores))
-    worst_hour    = hours[worst_idx]
-    worst_hi      = heat_index(temps[worst_idx], hums[worst_idx])
-
-    series_summary = "\n".join([
-        f"  +{hours[i]}h: {temps[i]:.1f}°C, {hums[i]:.0f}% humidity, {co2s[i]:.0f} ppm CO2"
-        for i in range(len(forecast_series))
-    ])
-
-    return f"""You are an environmental monitoring AI analyst for IoT climate sensors in Manila, Philippines.
-
-SENSOR: Node {sensor_id} at {establishment}, Barangay {barangay}
-
-CURRENT READINGS:
-- Temperature: {current.get('temperature_c', 0):.1f}°C
-- Humidity: {current.get('humidity_percent', 0):.0f}%
-- CO2: {current.get('co2_ppm', 0):.0f} ppm
-
-FORECAST SERIES (next {max(hours)} hours):
-{series_summary}
-
-KEY STATISTICS:
-- Temperature range: {min_temp:.1f}°C to {max_temp:.1f}°C (peak at +{max_temp_hour}h)
-- Peak CO2: {max_co2:.0f} ppm at +{max_co2_hour}h ({co2_risk_level(max_co2)})
-- Peak humidity: {max_hum:.0f}%
-- Worst combined stress: +{worst_hour}h (apparent temperature {worst_hi:.1f}°C)
-
-TASK:
-Write exactly 2 sentences summarizing this forecast for {establishment}.
-
-Sentence 1: Summarize the overall trend and key peaks across the forecast window with specific values and timing.
-
-Sentence 2: Identify the most critical period and give one actionable recommendation for building management or occupants.
-
-Rules:
-- Natural, professional language
-- Reference Node {sensor_id} and {establishment} specifically
-- No bullet points, headers, or lists
-- Output only the 2 sentences, nothing else
+Output that exact sentence with those exact numbers. Do not change the values. Do not add anything else.
 """
 
 
@@ -234,9 +154,9 @@ async def _call_ollama(prompt: str) -> str:
                 "prompt": prompt,
                 "stream": False,
                 "options": {
-                    "temperature": 0.7,
+                    "temperature": 0.1,
                     "top_p":       0.9,
-                    "num_predict": 200,
+                    "num_predict": 100,
                 }
             }
         )
@@ -258,8 +178,8 @@ async def _call_groq(prompt: str) -> str:
             json={
                 "model": GROQ_MODEL,
                 "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.7,
-                "max_tokens":  200,
+                "temperature": 0.1,
+                "max_tokens":  100,
             }
         )
         response.raise_for_status()
@@ -273,16 +193,38 @@ async def _call_llm(prompt: str) -> str:
 
 
 # ============================================================================
-# FALLBACK
+# FALLBACK — used when LLM is unavailable
 # ============================================================================
 
-def _fallback_insight(sensor: dict, current: dict, backend: str) -> str:
+def _fallback_insight(sensor: dict,
+                       predicted: dict,
+                       peak_temp_hour: int,
+                       peak_co2_hour: int) -> str:
+    sensor_id = sensor.get("sensor_id", "NODE-01")
+    barangay  = sensor.get("barangay", "Naga").title()
+    co2       = float(predicted.get("co2_ppm",          415))
+    temp      = float(predicted.get("temperature_c",    28))
+    hum       = float(predicted.get("humidity_percent", 75))
+    hi        = heat_index(temp, hum)
+
+    if co2 >= 440:
+        rec = "immediately improve ventilation and reduce indoor occupancy"
+    elif co2 >= 420:
+        rec = "open windows and increase ventilation especially during peak CO2 hours"
+    elif hi >= 41:
+        rec = "avoid all outdoor activities during peak heat and ensure cooling"
+    elif hi >= 32:
+        rec = "limit outdoor exposure during midday and stay hydrated"
+    elif hum >= 90:
+        rec = "ensure proper airflow in enclosed spaces to reduce moisture"
+    else:
+        rec = "no major concerns today, maintain normal ventilation"
+
     return (
-        f"Node {sensor.get('sensor_id')} at {sensor.get('establishment', 'the monitored area')} "
-        f"recorded {current.get('temperature_c', '?')}°C, "
-        f"{current.get('humidity_percent', '?')}% humidity, "
-        f"and {current.get('co2_ppm', '?')} ppm CO2. "
-        f"Insight generation is temporarily unavailable — please check the {backend} service."
+        f"{sensor_id} in {barangay}: CO2 is at {co2:.0f} ppm ({co2_risk_level(co2)}), "
+        f"temperature peaks at {temp:.1f}°C at {peak_temp_hour:02d}:00 "
+        f"(feels like {hi:.1f}°C — {comfort_label(hi)}), "
+        f"and humidity is at {hum:.0f}% — {rec}."
     )
 
 
@@ -291,19 +233,21 @@ def _fallback_insight(sensor: dict, current: dict, backend: str) -> str:
 # ============================================================================
 
 async def generate_insight(
-    sensor:      dict,
-    current:     dict,
-    predicted:   dict,
-    hours_ahead: int = 24
+    sensor:         dict,
+    current:        dict,
+    predicted:      dict,
+    peak_temp_hour: int = 13,
+    peak_co2_hour:  int = 12,
+    hours_ahead:    int = 24,
 ) -> str:
     try:
-        prompt  = _build_prompt(sensor, current, predicted, hours_ahead)
+        prompt  = _build_insight_prompt(sensor, predicted, peak_temp_hour, peak_co2_hour)
         insight = await _call_llm(prompt)
         logger.info(f"Insight generated via {LLM_BACKEND} for sensor {sensor.get('sensor_id')}")
         return insight
     except Exception as e:
         logger.error(f"Insight generation failed ({LLM_BACKEND}): {e}")
-        return _fallback_insight(sensor, current, LLM_BACKEND)
+        return _fallback_insight(sensor, predicted, peak_temp_hour, peak_co2_hour)
 
 
 async def generate_forecast_summary(
@@ -311,13 +255,4 @@ async def generate_forecast_summary(
     current:         dict,
     forecast_series: list,
 ) -> str:
-    if not forecast_series:
-        return "No forecast data available."
-    try:
-        prompt  = _build_forecast_prompt(sensor, current, forecast_series)
-        summary = await _call_llm(prompt)
-        logger.info(f"Forecast summary generated via {LLM_BACKEND} for sensor {sensor.get('sensor_id')}")
-        return summary
-    except Exception as e:
-        logger.error(f"Forecast summary generation failed ({LLM_BACKEND}): {e}")
-        return _fallback_insight(sensor, current, LLM_BACKEND)
+    return ""

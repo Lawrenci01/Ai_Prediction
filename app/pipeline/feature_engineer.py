@@ -1,8 +1,16 @@
 """
-Feature Engineering Pipeline
-==============================
-Transforms raw timestamp/co2/temperature/humidity data into
-rich ML features for LSTM training and inference.
+Feature Engineering Pipeline — FIXED
+======================================
+Key change: Reduced redundant CO2 lag/rolling features.
+
+Previously 150 features were generated, with the top 20 all being
+near-perfect copies of CO2 (corr > 0.997). This caused the LSTM to
+collapse — it learned to output the mean (~0.665 scaled) rather than
+learning actual patterns, because all inputs looked identical.
+
+Fix: Keep only the most informative lags (1h, 24h, 168h) and one
+rolling window per timeframe. Removed rollmax/rollmin/rollmom variants
+that added noise without new information. Target feature count: ~60-70.
 """
 
 import pandas as pd
@@ -14,8 +22,8 @@ from pathlib import Path
 import sys
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from app.pipeline.config import (
-    LAG_HOURS, ROLLING_WINDOWS, TARGET_COLS, TIMESTAMP_COL,
-    USE_LAG_FEATURES, USE_ROLLING_FEATURES, USE_CYCLICAL_ENCODING,
+    TARGET_COLS, TIMESTAMP_COL,
+    USE_CYCLICAL_ENCODING,
     WET_SEASON_MONTHS, get_model_path
 )
 
@@ -30,24 +38,20 @@ def add_time_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     ts = df[TIMESTAMP_COL]
 
-    df["year"]       = ts.dt.year
     df["month"]      = ts.dt.month
-    df["day"]        = ts.dt.day
-    df["hour"]       = ts.dt.hour
     df["dayofweek"]  = ts.dt.dayofweek
     df["dayofyear"]  = ts.dt.dayofyear
-    df["quarter"]    = ts.dt.quarter
     df["is_weekend"] = (ts.dt.dayofweek >= 5).astype(int)
 
     if USE_CYCLICAL_ENCODING:
-        df["hour_sin"]      = np.sin(2 * np.pi * df["hour"] / 24)
-        df["hour_cos"]      = np.cos(2 * np.pi * df["hour"] / 24)
-        df["month_sin"]     = np.sin(2 * np.pi * df["month"] / 12)
-        df["month_cos"]     = np.cos(2 * np.pi * df["month"] / 12)
-        df["dayofyear_sin"] = np.sin(2 * np.pi * df["dayofyear"] / 365)
-        df["dayofyear_cos"] = np.cos(2 * np.pi * df["dayofyear"] / 365)
-        df["dayofweek_sin"] = np.sin(2 * np.pi * df["dayofweek"] / 7)
-        df["dayofweek_cos"] = np.cos(2 * np.pi * df["dayofweek"] / 7)
+        df["hour_sin"]      = np.sin(2 * np.pi * ts.dt.hour / 24)
+        df["hour_cos"]      = np.cos(2 * np.pi * ts.dt.hour / 24)
+        df["month_sin"]     = np.sin(2 * np.pi * ts.dt.month / 12)
+        df["month_cos"]     = np.cos(2 * np.pi * ts.dt.month / 12)
+        df["dayofyear_sin"] = np.sin(2 * np.pi * ts.dt.dayofyear / 365)
+        df["dayofyear_cos"] = np.cos(2 * np.pi * ts.dt.dayofyear / 365)
+        df["dayofweek_sin"] = np.sin(2 * np.pi * ts.dt.dayofweek / 7)
+        df["dayofweek_cos"] = np.cos(2 * np.pi * ts.dt.dayofweek / 7)
 
     df["hours_elapsed"] = (ts - ts.min()).dt.total_seconds() / 3600
     return df
@@ -61,16 +65,14 @@ def add_manila_season_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     ts = df[TIMESTAMP_COL]
 
-    df["is_wet_season"]        = ts.dt.month.isin(WET_SEASON_MONTHS).astype(int)
-    df["season_progress"]      = ts.dt.dayofyear / 365.0
-    df["days_since_wet_start"] = (ts.dt.dayofyear - 152) % 365
-    df["season_sin"]           = np.sin(2 * np.pi * ts.dt.dayofyear / 365)
-    df["season_cos"]           = np.cos(2 * np.pi * ts.dt.dayofyear / 365)
+    df["is_wet_season"]   = ts.dt.month.isin(WET_SEASON_MONTHS).astype(int)
+    df["season_sin"]      = np.sin(2 * np.pi * ts.dt.dayofyear / 365)
+    df["season_cos"]      = np.cos(2 * np.pi * ts.dt.dayofyear / 365)
     return df
 
 
 # ============================================================================
-# CO2 FEATURES  (fixed — removed 8760h lag, added Keeling Curve features)
+# CO2 FEATURES — FIXED (reduced redundancy)
 # ============================================================================
 
 def add_co2_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -86,36 +88,34 @@ def add_co2_features(df: pd.DataFrame) -> pd.DataFrame:
     df["co2_years_elapsed"] = (ts.dt.year - ref_year) + (ts.dt.dayofyear / 365.0)
     df["co2_trend_linear"]  = df["co2_years_elapsed"] * 2.5
 
-    # 2. Polynomial trend (growth slightly accelerating)
-    df["co2_trend_squared"] = df["co2_years_elapsed"] ** 2
-
-    # 3. Detrended CO2 (residuals from expected global trend)
-    baseline_start  = df["co2_ppm"].iloc[:24].mean()
+    # 2. Detrended CO2 — this is the real signal the model needs to learn
+    baseline_start      = df["co2_ppm"].iloc[:24].mean()
     df["co2_detrended"] = df["co2_ppm"] - (baseline_start + df["co2_trend_linear"])
 
-    # 4. Diurnal plant respiration cycle (peaks 6am, troughs 2pm)
-    df["co2_diurnal_sin"] = np.sin(2 * np.pi * (df["hour"] - 6) / 24)
-    df["co2_diurnal_cos"] = np.cos(2 * np.pi * (df["hour"] - 6) / 24)
+    # 3. Diurnal plant respiration cycle
+    df["co2_diurnal_sin"] = np.sin(2 * np.pi * (ts.dt.hour - 6) / 24)
+    df["co2_diurnal_cos"] = np.cos(2 * np.pi * (ts.dt.hour - 6) / 24)
 
-    # 5. Annual Keeling seasonal oscillation
-    df["co2_seasonal_sin"] = np.sin(2 * np.pi * df["month"] / 12)
-    df["co2_seasonal_cos"] = np.cos(2 * np.pi * df["month"] / 12)
+    # 4. Annual Keeling seasonal oscillation
+    df["co2_seasonal_sin"] = np.sin(2 * np.pi * ts.dt.month / 12)
+    df["co2_seasonal_cos"] = np.cos(2 * np.pi * ts.dt.month / 12)
 
-    # 6. Short-window rolling stats
-    df["co2_trend_30d"] = df["co2_ppm"].rolling(720,  min_periods=1).mean()
-    df["co2_trend_7d"]  = df["co2_ppm"].rolling(168,  min_periods=1).mean()
-    df["co2_trend_24h"] = df["co2_ppm"].rolling(24,   min_periods=1).mean()
+    # 5. REDUCED rolling stats — one mean per timeframe only (no rollmax/rollmin/rollmom)
+    #    These were creating 5x redundant features that all correlated > 0.997
+    df["co2_trend_7d"]  = df["co2_ppm"].rolling(168, min_periods=1).mean()
+    df["co2_trend_24h"] = df["co2_ppm"].rolling(24,  min_periods=1).mean()
 
-    # 7. 30-day z-score anomaly
-    co2_std_30d = df["co2_ppm"].rolling(720, min_periods=1).std().fillna(1.0)
-    df["co2_zscore_30d"] = (df["co2_ppm"] - df["co2_trend_30d"]) / (co2_std_30d + 1e-9)
+    # 6. 30-day z-score anomaly — useful, kept
+    co2_mean_30d = df["co2_ppm"].rolling(720, min_periods=1).mean()
+    co2_std_30d  = df["co2_ppm"].rolling(720, min_periods=1).std().fillna(1.0)
+    df["co2_zscore_30d"] = (df["co2_ppm"] - co2_mean_30d) / (co2_std_30d + 1e-9)
 
-    # 8. Rate of change
+    # 7. REDUCED rate of change — keep 1h and 24h diff only
+    #    168h diff was redundant with rolling mean features
     df["co2_diff_1h"]  = df["co2_ppm"].diff(1).fillna(0)
     df["co2_diff_24h"] = df["co2_ppm"].diff(24).fillna(0)
-    df["co2_diff_7d"]  = df["co2_ppm"].diff(168).fillna(0)
 
-    # 9. Wet season x diurnal interaction
+    # 8. Wet season interaction
     if "is_wet_season" in df.columns:
         df["co2_wetday_interact"] = df["is_wet_season"] * df["co2_diurnal_cos"]
 
@@ -158,9 +158,8 @@ def add_cross_target_features(df: pd.DataFrame) -> pd.DataFrame:
     has_hum  = "humidity_percent" in df.columns
 
     if has_temp and has_hum:
-        df["temp_x_humidity"]     = df["temperature_c"] * df["humidity_percent"]
-        df["temp_humidity_ratio"] = df["temperature_c"] / (df["humidity_percent"] + 1e-9)
-        df["heat_stress_index"]   = (
+        df["temp_x_humidity"]   = df["temperature_c"] * df["humidity_percent"]
+        df["heat_stress_index"] = (
             df["temperature_c"]
             + 0.33 * (df["humidity_percent"] / 100 * 6.105
             * np.exp(17.27 * df["temperature_c"] / (237.7 + df["temperature_c"])))
@@ -170,52 +169,56 @@ def add_cross_target_features(df: pd.DataFrame) -> pd.DataFrame:
     if has_co2 and has_temp:
         df["co2_per_temp"] = df["co2_ppm"] / (df["temperature_c"] + 273.15)
 
-    if has_co2 and has_hum:
-        df["co2_humidity_ratio"] = df["co2_ppm"] / (df["humidity_percent"] + 1e-9)
-
-    if has_co2 and has_temp and has_hum:
-        df["co2_lag1_x_temp"] = df["co2_ppm"].shift(1) * df["temperature_c"]
-        df["temp_lag1_x_hum"] = df["temperature_c"].shift(1) * df["humidity_percent"]
-
     return df
 
 
 # ============================================================================
-# LAG FEATURES
+# LAG FEATURES — FIXED (reduced from 9 lags to 3 key lags)
 # ============================================================================
 
 def add_lag_features(df: pd.DataFrame, target_cols: list = None) -> pd.DataFrame:
-    if not USE_LAG_FEATURES:
-        return df
     if target_cols is None:
         target_cols = TARGET_COLS
 
     df = df.copy()
+
+    # FIXED: was [1, 3, 6, 12, 24, 48, 72, 168, 336] — 9 lags per target = 27 lag cols
+    # Top correlated features showed lags 1h, 3h, 6h, 12h all > 0.999 with CO2
+    # meaning they're near-identical. Keep only 3 lags that capture distinct timescales:
+    #   1h  = immediate past (most useful)
+    #   24h = same hour yesterday (daily cycle)
+    #   168h = same hour last week (weekly cycle)
+    KEY_LAGS = [1, 24, 168]
+
     for col in target_cols:
-        for lag in LAG_HOURS:
+        for lag in KEY_LAGS:
             df[f"{col}_lag_{lag}h"] = df[col].shift(lag)
+
     return df
 
 
 # ============================================================================
-# ROLLING FEATURES
+# ROLLING FEATURES — FIXED (mean only, no max/min/mom variants)
 # ============================================================================
 
 def add_rolling_features(df: pd.DataFrame, target_cols: list = None) -> pd.DataFrame:
-    if not USE_ROLLING_FEATURES:
-        return df
     if target_cols is None:
         target_cols = TARGET_COLS
 
     df = df.copy()
+
+    # FIXED: was generating mean + std + min + max + momentum per window
+    # That's 5 features x 5 windows x 3 targets = 75 rolling cols, mostly redundant
+    # Now: mean + std only (std captures variance, mean captures level)
+    # Windows: 24h (daily), 168h (weekly) — enough to capture CO2 patterns
+    ROLLING_WINDOWS = [24, 168]
+
     for col in target_cols:
         for window in ROLLING_WINDOWS:
             roll = df[col].rolling(window=window, min_periods=1)
             df[f"{col}_rollmean_{window}h"] = roll.mean()
             df[f"{col}_rollstd_{window}h"]  = roll.std().fillna(0)
-            df[f"{col}_rollmin_{window}h"]  = roll.min()
-            df[f"{col}_rollmax_{window}h"]  = roll.max()
-            df[f"{col}_rollmom_{window}h"]  = df[col] - roll.mean()
+
     return df
 
 
