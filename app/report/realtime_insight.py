@@ -411,23 +411,41 @@ async def get_realtime_insight(
 
 @router.get("/api/realtime/insight/history")
 async def get_realtime_history(
-    limit: int = Query(default=12, ge=1, le=288, description="Number of snapshots (288 = 24h)"),
+    limit: int = Query(default=12, ge=1, le=1440, description="Number of snapshots — default 12 (60 min), max 1440 (5 days)"),
+    from_ts: Optional[datetime] = Query(default=None, alias="from", description="Start timestamp e.g. 2026-02-19T20:00:00"),
+    to_ts:   Optional[datetime] = Query(default=None, alias="to",   description="End timestamp   e.g. 2026-02-19T22:00:00"),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Last N realtime snapshots from realtime_reports table.
-    Default: last 12 snapshots = last 60 minutes.
-    Max: 288 = last 24 hours.
+    Realtime snapshots from realtime_reports table.
+
+    Filter options (use one or combine):
+      ?limit=12                                          → last 60 minutes
+      ?from=2026-02-19T20:00:00&to=2026-02-19T22:00:00  → specific range
+      ?from=2026-02-19T20:00:00                          → from a point until now
     """
-    result = await db.execute(
-        select(RealtimeReport)
-        .order_by(desc(RealtimeReport.minute_stamp))
-        .limit(limit)
-    )
-    rows = result.scalars().all()
+    q = select(RealtimeReport)
+
+    if from_ts and to_ts:
+        q = q.where(RealtimeReport.minute_stamp >= from_ts)              .where(RealtimeReport.minute_stamp <= to_ts)
+    elif from_ts:
+        q = q.where(RealtimeReport.minute_stamp >= from_ts)
+    elif to_ts:
+        q = q.where(RealtimeReport.minute_stamp <= to_ts)
+    else:
+        # No range given — fall back to latest N snapshots
+        q = q.order_by(desc(RealtimeReport.minute_stamp)).limit(limit)
+
+    if from_ts or to_ts:
+        q = q.order_by(RealtimeReport.minute_stamp.asc())
+
+    result = await db.execute(q)
+    rows   = result.scalars().all()
 
     return {
-        "count": len(rows),
+        "count":    len(rows),
+        "from":     from_ts.isoformat() if from_ts else None,
+        "to":       to_ts.isoformat()   if to_ts   else None,
         "snapshots": [
             {
                 "minute_stamp":     r.minute_stamp.isoformat(),
