@@ -28,7 +28,6 @@ jobs:
       DB_USER:        ${{ secrets.DB_USER }}
       DB_PASS:        ${{ secrets.DB_PASS }}
       MODEL_DIR:      ${{ vars.MODEL_DIR }}
-      DATA_FILE:      ${{ vars.DATA_FILE }}
       MIN_NEW_ROWS:   ${{ vars.MIN_NEW_ROWS }}
       RETRAIN_DAY:    ${{ vars.RETRAIN_DAY }}
       RETRAIN_HOUR:   ${{ vars.RETRAIN_HOUR }}

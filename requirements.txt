@@ -13,7 +13,7 @@ pymysql==1.1.1
 tensorflow==2.17.0
 numpy==1.26.4
 pandas==2.2.3
-scikit-learn==1.5.2
+scikit-learn==1.7.2
 
 # HTTP (for Groq/Ollama calls)
 httpx==0.27.2
@@ -21,6 +21,3 @@ httpx==0.27.2
 # Environment
 python-dotenv==1.0.1
 
-pandas
-sqlalchemy
-pymysql
