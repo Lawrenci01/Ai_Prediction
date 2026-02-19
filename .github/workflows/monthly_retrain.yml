@@ -35,6 +35,7 @@ jobs:
       RETRAIN_MINUTE:   ${{ secrets.RETRAIN_MINUTE }}
       LLM_BACKEND:      ${{ secrets.LLM_BACKEND }}
       GROQ_MODEL:       ${{ secrets.GROQ_MODEL }}
+      CA_CERT_PATH:     ${{ github.workspace }}/ca.pem
 
     steps:
       - name: Checkout repository
@@ -53,14 +54,15 @@ jobs:
 
       - name: Debug secrets presence
         run: |
-          echo "DB_HOST set    : ${{ secrets.DB_HOST != '' }}"
-          echo "DB_PORT set    : ${{ secrets.DB_PORT != '' }}"
-          echo "DB_NAME set    : ${{ secrets.DB_NAME != '' }}"
-          echo "DB_USER set    : ${{ secrets.DB_USER != '' }}"
-          echo "DB_PASS set    : ${{ secrets.DB_PASS != '' }}"
-          echo "MIN_NEW_ROWS   : ${{ secrets.MIN_NEW_ROWS != '' }}"
-          echo "DATA_FETCH_HRS : ${{ secrets.DATA_FETCH_HOURS != '' }}"
-          echo "MODEL_DIR      : ${{ secrets.MODEL_DIR != '' }}"
+          echo "DB_HOST set      : ${{ secrets.DB_HOST != '' }}"
+          echo "DB_PORT set      : ${{ secrets.DB_PORT != '' }}"
+          echo "DB_NAME set      : ${{ secrets.DB_NAME != '' }}"
+          echo "DB_USER set      : ${{ secrets.DB_USER != '' }}"
+          echo "DB_PASS set      : ${{ secrets.DB_PASS != '' }}"
+          echo "MIN_NEW_ROWS     : ${{ secrets.MIN_NEW_ROWS != '' }}"
+          echo "DATA_FETCH_HOURS : ${{ secrets.DATA_FETCH_HOURS != '' }}"
+          echo "MODEL_DIR        : ${{ secrets.MODEL_DIR != '' }}"
+          echo "CA cert exists   : $(test -f ${{ github.workspace }}/ca.pem && echo true || echo false)"
 
       - name: Validate required secrets
         run: |
@@ -114,3 +116,14 @@ jobs:
         if: failure()
         run: |
           echo "::error::Monthly retrain FAILED on $(date -u '+%Y-%m-%d %H:%M UTC')"
+          - name: Debug all secrets
+        run: |
+          echo "DB_HOST  empty? $([ -z "$DB_HOST"  ] && echo YES || echo NO)"
+          echo "DB_PORT  empty? $([ -z "$DB_PORT"  ] && echo YES || echo NO)"
+          echo "DB_NAME  empty? $([ -z "$DB_NAME"  ] && echo YES || echo NO)"
+          echo "DB_USER  empty? $([ -z "$DB_USER"  ] && echo YES || echo NO)"
+          echo "DB_PASS  empty? $([ -z "$DB_PASS"  ] && echo YES || echo NO)"
+          echo "MIN_NEW_ROWS      = $MIN_NEW_ROWS"
+          echo "DATA_FETCH_HOURS  = $DATA_FETCH_HOURS"
+          echo "CA_CERT_PATH      = $CA_CERT_PATH"
+          echo "ca.pem exists?    $(test -f ca.pem && echo YES || echo NO)"
