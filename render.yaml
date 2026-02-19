@@ -1,0 +1,51 @@
+# ============================================================
+# render.yaml — Render Blueprint
+# AI Prediction API (FastAPI + MySQL)
+# ============================================================
+
+services:
+  - type: web
+    name: ai-prediction-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter          # change to "standard" for production
+    region: singapore      # closest to Philippines
+    branch: main
+
+    # Health check — maps to your GET / endpoint
+    healthCheckPath: /
+
+    # Auto-deploy on push to main
+    autoDeploy: true
+
+    envVars:
+      # --- Database (your external MySQL) ---
+      - key: DB_HOST
+        sync: false        # fill in Render dashboard
+
+      - key: DB_PORT
+        value: "3306"
+
+      - key: DB_NAME
+        sync: false
+
+      - key: DB_USER
+        sync: false
+
+      - key: DB_PASS
+        sync: false        # mark as secret in dashboard
+
+      # --- App ---
+      - key: ALLOWED_ORIGINS
+        value: "*"         # replace with your frontend URL in production
+
+      # --- Groq (if used by llm_engine.py) ---
+      - key: GROQ_API_KEY
+        sync: false        # mark as secret in dashboard
+
+      # --- Python ---
+      - key: PYTHONUNBUFFERED
+        value: "1"
+
+      - key: TF_CPP_MIN_LOG_LEVEL
+        value: "2"         # suppress TensorFlow info/warning logs
