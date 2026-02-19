@@ -37,4 +37,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:${PORT}/ || exit 1
 
 # Start the FastAPI app with uvicorn
-CMD uvicorn main:app --host 0.0.0.0 --port ${PORT} --workers 1
+CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT} --workers 1
