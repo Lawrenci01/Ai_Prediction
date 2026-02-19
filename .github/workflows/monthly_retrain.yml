@@ -21,20 +21,20 @@ jobs:
     timeout-minutes: 120
 
     env:
-      DATABASE_URL:    ${{ secrets.DATABASE_URL }}
-      DB_HOST:         ${{ secrets.DB_HOST }}
-      DB_PORT:         ${{ secrets.DB_PORT }}
-      DB_NAME:         ${{ secrets.DB_NAME }}
-      DB_USER:         ${{ secrets.DB_USER }}
-      DB_PASS:         ${{ secrets.DB_PASS }}
-      MODEL_DIR:       ${{ vars.MODEL_DIR }}
-      DATA_FILE:       ${{ vars.DATA_FILE }}
-      MIN_NEW_ROWS:    ${{ vars.MIN_NEW_ROWS }}
-      RETRAIN_DAY:     ${{ vars.RETRAIN_DAY }}
-      RETRAIN_HOUR:    ${{ vars.RETRAIN_HOUR }}
-      RETRAIN_MINUTE:  ${{ vars.RETRAIN_MINUTE }}
-      LLM_BACKEND:     ${{ vars.LLM_BACKEND }}
-      GROQ_MODEL:      ${{ vars.GROQ_MODEL }}
+      DATABASE_URL:   ${{ secrets.DATABASE_URL }}
+      DB_HOST:        ${{ secrets.DB_HOST }}
+      DB_PORT:        ${{ secrets.DB_PORT }}
+      DB_NAME:        ${{ secrets.DB_NAME }}
+      DB_USER:        ${{ secrets.DB_USER }}
+      DB_PASS:        ${{ secrets.DB_PASS }}
+      MODEL_DIR:      ${{ vars.MODEL_DIR }}
+      DATA_FILE:      ${{ vars.DATA_FILE }}
+      MIN_NEW_ROWS:   ${{ vars.MIN_NEW_ROWS }}
+      RETRAIN_DAY:    ${{ vars.RETRAIN_DAY }}
+      RETRAIN_HOUR:   ${{ vars.RETRAIN_HOUR }}
+      RETRAIN_MINUTE: ${{ vars.RETRAIN_MINUTE }}
+      LLM_BACKEND:    ${{ vars.LLM_BACKEND }}
+      GROQ_MODEL:     ${{ vars.GROQ_MODEL }}
 
     steps:
       - name: Checkout repository
@@ -51,9 +51,21 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Validate required secrets
+        run: |
+          missing=()
+          [ -z "$DB_HOST" ]  && missing+=("DB_HOST")
+          [ -z "$DB_NAME" ]  && missing+=("DB_NAME")
+          [ -z "$DB_USER" ]  && missing+=("DB_USER")
+          [ -z "$DB_PASS" ]  && missing+=("DB_PASS")
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing required secrets: ${missing[*]}"
+            exit 1
+          fi
+          echo "All required secrets are present."
+
       - name: Run retrain scheduler
         run: |
-          # Go to repo root
           cd $GITHUB_WORKSPACE
           export PYTHONPATH=$GITHUB_WORKSPACE
 
@@ -63,6 +75,7 @@ jobs:
           else
             echo "Running full retrain with accumulated data..."
             python -m app.scheduler.retrain_scheduler --run-now
+          fi
 
       - name: Commit retrain history
         if: success()
