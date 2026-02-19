@@ -43,8 +43,8 @@ from app.database.repository import (
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 
-SCHEDULER_HOUR   = int(os.getenv("SCHEDULER_HOUR",   "1"))
-SCHEDULER_MINUTE = int(os.getenv("SCHEDULER_MINUTE", "0"))
+SCHEDULER_HOUR   = int(os.getenv("SCHEDULER_HOUR")   or "1")
+SCHEDULER_MINUTE = int(os.getenv("SCHEDULER_MINUTE") or "0")
 DATA_FETCH_HOURS = int(os.getenv("DATA_FETCH_HOURS", "336"))
 LLM_BACKEND      = os.getenv("LLM_BACKEND", "groq")
 
