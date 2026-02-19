@@ -2,6 +2,7 @@
 Monthly Retrain Scheduler
 ==========================
 Fine-tunes existing LSTM models using the last 30 days of sensor_data.
+Connects to Aiven MySQL using SSL.
 
 Usage:
     python -m app.scheduler.retrain_scheduler --evaluate-only
@@ -16,18 +17,22 @@ import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 from pathlib import Path
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 import os
+
+# ── load .env explicitly from project root ────────────────────────────────────
+from dotenv import load_dotenv
+load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent.parent / ".env")
 
 from app.pipeline.config import (
     TARGET_COLS, SEQUENCE_LENGTH, PREDICTION_HORIZON,
     EPOCHS, BATCH_SIZE, TRAIN_SPLIT, MODEL_DIR, get_model_path
 )
 from app.pipeline.feature_engineer import (
-    build_features, get_feature_columns, load_feature_cols
+    build_features, load_feature_cols
 )
 from app.pipeline.sequence_builder import (
-    build_sequences_for_target, load_scalers, _scaler_X_path
+    build_sequences_for_target, _scaler_X_path
 )
 from app.model.lstm import (
     load_lstm, save_lstm, get_callbacks
@@ -40,28 +45,102 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ── env ───────────────────────────────────────────────────────────────────────
-DB_HOST      = os.getenv("DB_HOST")
-DB_PORT      = os.getenv("DB_PORT", "3306")
-DB_NAME      = os.getenv("DB_NAME")
-DB_USER      = os.getenv("DB_USER")
-DB_PASS      = os.getenv("DB_PASS")
-DATABASE_URL = os.getenv("DATABASE_URL")
-MIN_NEW_ROWS = int(os.getenv("MIN_NEW_ROWS", "720"))  # default = 30 days x 24h
+DB_HOST          = os.getenv("DB_HOST")
+DB_PORT          = os.getenv("DB_PORT", "3306")
+DB_NAME          = os.getenv("DB_NAME")
+DB_USER          = os.getenv("DB_USER")
+DB_PASS          = os.getenv("DB_PASS")
+DATABASE_URL     = os.getenv("DATABASE_URL")
+MIN_NEW_ROWS     = int(os.getenv("MIN_NEW_ROWS", "720"))
+DATA_FETCH_HOURS = int(os.getenv("DATA_FETCH_HOURS", "336"))
+CA_CERT_PATH     = os.getenv(
+    "CA_CERT_PATH",
+    str(Path(__file__).resolve().parent.parent.parent / "ca.pem")
+)
 
 if not DATABASE_URL:
     if not all([DB_HOST, DB_NAME, DB_USER, DB_PASS]):
         logger.error("Missing required DB env vars: DB_HOST, DB_NAME, DB_USER, DB_PASS")
         sys.exit(1)
-    DATABASE_URL = f"mysql+pymysql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+    DATABASE_URL = (
+        f"mysql+pymysql://{DB_USER}:{DB_PASS}"
+        f"@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+    )
+
+
+# ── engine ────────────────────────────────────────────────────────────────────
+
+def _test_engine(engine) -> bool:
+    """Return True if engine can connect successfully."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return True
+    except Exception as e:
+        logger.warning(f"Connection test failed: {e}")
+        return False
+
+
+def get_engine():
+    """
+    Create SQLAlchemy engine for Aiven MySQL.
+    Tries 3 SSL methods in order until one works.
+    """
+    ca_path = Path(CA_CERT_PATH)
+
+    # Method 1: CA cert with ssl_ca (PyMySQL native)
+    if ca_path.exists():
+        logger.info(f"Method 1 — CA cert: {ca_path}")
+        engine = create_engine(
+            DATABASE_URL,
+            connect_args={
+                "ssl_ca":              str(ca_path),
+                "ssl_verify_cert":     True,
+                "ssl_verify_identity": False,
+            }
+        )
+        if _test_engine(engine):
+            logger.info("Connected via Method 1 (CA cert + verify)")
+            return engine
+
+        # Method 2: CA cert without verification
+        logger.info("Method 2 — CA cert without verification")
+        engine = create_engine(
+            DATABASE_URL,
+            connect_args={
+                "ssl_ca":          str(ca_path),
+                "ssl_verify_cert": False,
+            }
+        )
+        if _test_engine(engine):
+            logger.info("Connected via Method 2 (CA cert, no verify)")
+            return engine
+
+    # Method 3: SSL required, no cert
+    logger.info("Method 3 — SSL without cert")
+    engine = create_engine(
+        DATABASE_URL,
+        connect_args={
+            "ssl_disabled":        False,
+            "ssl_verify_cert":     False,
+            "ssl_verify_identity": False,
+        }
+    )
+    if _test_engine(engine):
+        logger.info("Connected via Method 3 (SSL, no cert)")
+        return engine
+
+    logger.error("All SSL connection methods failed. Exiting.")
+    sys.exit(1)
 
 
 # ── load data ─────────────────────────────────────────────────────────────────
 
 def load_last_30_days() -> pd.DataFrame | None:
-    """Fetch last 30 days of sensor_data from MySQL synchronously."""
+    """Fetch last DATA_FETCH_HOURS of sensor_data from Aiven MySQL."""
     try:
-        engine = create_engine(DATABASE_URL)
-        since  = (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+        engine = get_engine()
+        since  = (datetime.utcnow() - timedelta(hours=DATA_FETCH_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
         query  = f"""
             SELECT recorded_at, co2_density, temperature_c, humidity
             FROM sensor_data
@@ -69,7 +148,7 @@ def load_last_30_days() -> pd.DataFrame | None:
             ORDER BY recorded_at ASC
         """
         df = pd.read_sql(query, engine)
-        logger.info(f"Loaded {len(df):,} rows from sensor_data (last 30 days)")
+        logger.info(f"Loaded {len(df):,} rows from sensor_data (last {DATA_FETCH_HOURS}h)")
 
         df = df.rename(columns={
             "recorded_at": "timestamp",
@@ -114,7 +193,6 @@ def run_evaluate(df: pd.DataFrame):
     for target in TARGET_COLS:
         logger.info(f"--- Evaluating: {target} ---")
         try:
-            # Load per-target scaler_X and scaler_y
             with open(_scaler_X_path(target), "rb") as f:
                 scaler_X = pickle.load(f)
             with open(get_model_path(f"scaler_{target}"), "rb") as f:
@@ -134,7 +212,7 @@ def run_evaluate(df: pd.DataFrame):
                 logger.warning(f"No test sequences for {target}, skipping.")
                 continue
 
-            model        = load_lstm(target)
+            model         = load_lstm(target)
             y_pred_scaled = model.predict(X_test, verbose=0)
 
             y_pred = scaler_y.inverse_transform(
@@ -160,18 +238,14 @@ def run_evaluate(df: pd.DataFrame):
 # ── fine-tune ─────────────────────────────────────────────────────────────────
 
 def run_finetune(df: pd.DataFrame):
-    """
-    Fine-tune existing saved LSTM models on the last 30 days of data.
-    Does NOT rebuild the model — loads existing weights and continues training.
-    """
+    """Fine-tune existing LSTM models on the last 30 days of data."""
     logger.info("=" * 60)
-    logger.info("FINE-TUNE MODE (last 30 days)")
+    logger.info("FINE-TUNE MODE")
     logger.info("=" * 60)
 
     if len(df) < MIN_NEW_ROWS:
         logger.warning(
-            f"Only {len(df)} rows available, minimum is {MIN_NEW_ROWS} "
-            f"({MIN_NEW_ROWS // 24} days). Aborting."
+            f"Only {len(df)} rows available, minimum is {MIN_NEW_ROWS}. Aborting."
         )
         sys.exit(1)
 
@@ -190,7 +264,6 @@ def run_finetune(df: pd.DataFrame):
     for target in TARGET_COLS:
         logger.info(f"--- Fine-tuning: {target} ---")
         try:
-            # Load existing scalers (do NOT refit — use original scale)
             with open(_scaler_X_path(target), "rb") as f:
                 scaler_X = pickle.load(f)
             with open(get_model_path(f"scaler_{target}"), "rb") as f:
@@ -198,7 +271,7 @@ def run_finetune(df: pd.DataFrame):
 
             data = build_sequences_for_target(
                 df_feat, feature_cols, target,
-                fit=False,          # use existing scalers, don't refit
+                fit=False,
                 scaler_X=scaler_X,
                 scaler_y=scaler_y,
             )
@@ -216,11 +289,8 @@ def run_finetune(df: pd.DataFrame):
                 f"Fine-tune sequences — train: {len(X_train):,}, val: {len(X_val):,}"
             )
 
-            # Load existing model and continue training
-            model     = load_lstm(target)
-            callbacks = get_callbacks(target)
-
-            # Use fewer epochs for fine-tuning
+            model           = load_lstm(target)
+            callbacks       = get_callbacks(target)
             FINETUNE_EPOCHS = min(50, EPOCHS)
 
             model.fit(
@@ -233,7 +303,7 @@ def run_finetune(df: pd.DataFrame):
             )
 
             save_lstm(model, target)
-            logger.info(f"Fine-tune complete and saved for: {target}")
+            logger.info(f"Fine-tune complete and saved: {target}")
 
         except Exception as e:
             logger.error(f"Fine-tune failed for {target}: {e}")
