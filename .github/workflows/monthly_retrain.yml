@@ -1,113 +1,70 @@
-name: Monthly Retrain
+"""
+Database Connection
+===================
+MySQL connection pool using SQLAlchemy async engine.
+Set credentials in .env file or GitHub Secrets.
+"""
 
-on:
-  schedule:
-    - cron: "0 2 28 * *"   # 28th of every month at 2:00 AM UTC
-  workflow_dispatch:         # Allow manual trigger from GitHub UI
-    inputs:
-      evaluate_only:
-        description: "Only evaluate models, skip retraining (good for testing)"
-        required: false
-        default: "false"
-        type: choice
-        options:
-          - "false"
-          - "true"
+import os
+import ssl as ssl_module
+from dotenv import load_dotenv
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker, DeclarativeBase
+from sqlalchemy import text
+import logging
 
-jobs:
-  retrain:
-    name: Monthly Model Retrain
-    runs-on: ubuntu-latest
-    timeout-minutes: 120    # Retraining can take time
+load_dotenv()
+logger = logging.getLogger(__name__)
 
-    env:
-      # --- Secrets (sensitive) ---
-      DATABASE_URL:    ${{ secrets.DATABASE_URL }}
-      GROQ_API_KEY:    ${{ secrets.GROQ_API_KEY }}
-      DB_HOST:         ${{ secrets.DB_HOST }}
-      DB_PORT:         ${{ secrets.DB_PORT }}
-      DB_NAME:         ${{ secrets.DB_NAME }}
-      DB_USER:         ${{ secrets.DB_USER }}
-      DB_PASS:         ${{ secrets.DB_PASS }}
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = os.getenv("DB_PORT", "3306")
+DB_NAME = os.getenv("DB_NAME", "iot_db")
+DB_USER = os.getenv("DB_USER", "root")
+DB_PASS = os.getenv("DB_PASS") or os.getenv("DB_PASSWORD", "")  # supports both
 
-      # --- Variables (non-sensitive config) ---
-      MODEL_DIR:       ${{ vars.MODEL_DIR }}
-      DATA_FILE:       ${{ vars.DATA_FILE }}
-      MIN_NEW_ROWS:    ${{ vars.MIN_NEW_ROWS }}
-      RETRAIN_DAY:     ${{ vars.RETRAIN_DAY }}
-      RETRAIN_HOUR:    ${{ vars.RETRAIN_HOUR }}
-      RETRAIN_MINUTE:  ${{ vars.RETRAIN_MINUTE }}
-      LLM_BACKEND:     ${{ vars.LLM_BACKEND }}
-      GROQ_MODEL:      ${{ vars.GROQ_MODEL }}
+DATABASE_URL = (
+    f"mysql+aiomysql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+)
 
-    steps:
-      # ------------------------------------------------------------------ #
-      # 1. Checkout repo
-      # ------------------------------------------------------------------ #
-      - name: Checkout repository
-        uses: actions/checkout@v4
+# Aiven requires SSL — use a proper SSLContext (not a plain dict)
+ssl_ctx = ssl_module.create_default_context()
+ssl_ctx.check_hostname = False
+ssl_ctx.verify_mode = ssl_module.CERT_NONE
 
-      # ------------------------------------------------------------------ #
-      # 2. Set up Python 3.11
-      # ------------------------------------------------------------------ #
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: "pip"
+engine = create_async_engine(
+    DATABASE_URL,
+    pool_size=10,
+    max_overflow=20,
+    pool_pre_ping=True,
+    echo=False,
+    connect_args={"ssl": ssl_ctx}
+)
 
-      # ------------------------------------------------------------------ #
-      # 3. Install dependencies
-      # ------------------------------------------------------------------ #
-      - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
+AsyncSessionLocal = sessionmaker(
+    engine, class_=AsyncSession, expire_on_commit=False
+)
 
-      # ------------------------------------------------------------------ #
-      # 4. Run retrain or evaluate-only
-      # ------------------------------------------------------------------ #
-      - name: Run retrain scheduler
-        run: |
-          if [ "${{ github.event.inputs.evaluate_only }}" == "true" ]; then
-            echo "Running in evaluate-only mode..."
-            python retrain_scheduler.py --evaluate-only
-          else
-            echo "Running full retrain with accumulated data..."
-            python retrain_scheduler.py --run-now
-          fi
 
-      # ------------------------------------------------------------------ #
-      # 5. Commit updated retrain_history.csv back to repo
-      # ------------------------------------------------------------------ #
-      - name: Commit retrain history
-        if: success()
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add saved_models/retrain_history.csv || true
-          git diff --cached --quiet || git commit -m "chore: update retrain history [$(date -u '+%Y-%m-%d')]"
-          git push || echo "Nothing to push"
+class Base(DeclarativeBase):
+    pass
 
-      # ------------------------------------------------------------------ #
-      # 6. Upload retrain artifacts (logs + model files)
-      # ------------------------------------------------------------------ #
-      - name: Upload retrain artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: retrain-results-${{ github.run_id }}
-          path: |
-            saved_models/retrain_history.csv
-            saved_models/*.keras
-            saved_models/*.pkl
-            logs/
-          retention-days: 30
 
-      # ------------------------------------------------------------------ #
-      # 7. Notify on failure
-      # ------------------------------------------------------------------ #
-      - name: Notify on failure
-        if: failure()
-        run: |
-          echo "::error::Monthly retrain FAILED on $(date -u '+%Y-%m-%d %H:%M UTC')"
+async def get_db():
+    """FastAPI dependency — yields async DB session."""
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+        finally:
+            await session.close()
+
+
+async def check_connection():
+    """Test DB connectivity on startup."""
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+        logger.info("✅ MySQL connection OK")
+        return True
+    except Exception as e:
+        logger.error(f"❌ MySQL connection failed: {e}")
+        return False
