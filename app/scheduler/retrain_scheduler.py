@@ -44,23 +44,49 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+def _get_env(key: str, default: str) -> str:
+    """Get env var, falling back to default if missing or empty string."""
+    value = os.getenv(key, "").strip()
+    if not value:
+        logger.warning(f"Env var '{key}' is empty or missing, using default: {default}")
+        return default
+    return value
+
+
+def _get_env_int(key: str, default: int) -> int:
+    """Get env var as int, falling back to default if missing or empty."""
+    value = _get_env(key, str(default))
+    try:
+        return int(value)
+    except ValueError:
+        logger.warning(f"Env var '{key}' has invalid value '{value}', using default: {default}")
+        return default
+
+
 # ── env ───────────────────────────────────────────────────────────────────────
-DB_HOST          = os.getenv("DB_HOST")
-DB_PORT          = os.getenv("DB_PORT", "3306")
-DB_NAME          = os.getenv("DB_NAME")
-DB_USER          = os.getenv("DB_USER")
-DB_PASS          = os.getenv("DB_PASS")
-DATABASE_URL     = os.getenv("DATABASE_URL")
-MIN_NEW_ROWS     = int(os.getenv("MIN_NEW_ROWS", "720"))
-DATA_FETCH_HOURS = int(os.getenv("DATA_FETCH_HOURS", "336"))
-CA_CERT_PATH     = os.getenv(
+DB_HOST          = _get_env("DB_HOST",          "")
+DB_PORT          = _get_env("DB_PORT",          "3306")
+DB_NAME          = _get_env("DB_NAME",          "")
+DB_USER          = _get_env("DB_USER",          "")
+DB_PASS          = _get_env("DB_PASS",          "")
+DATABASE_URL     = _get_env("DATABASE_URL",     "")
+MIN_NEW_ROWS     = _get_env_int("MIN_NEW_ROWS",     720)
+DATA_FETCH_HOURS = _get_env_int("DATA_FETCH_HOURS", 336)
+CA_CERT_PATH     = _get_env(
     "CA_CERT_PATH",
     str(Path(__file__).resolve().parent.parent.parent / "ca.pem")
 )
 
 if not DATABASE_URL:
     if not all([DB_HOST, DB_NAME, DB_USER, DB_PASS]):
-        logger.error("Missing required DB env vars: DB_HOST, DB_NAME, DB_USER, DB_PASS")
+        logger.error(
+            "Missing required DB env vars. "
+            f"DB_HOST={'SET' if DB_HOST else 'MISSING'}, "
+            f"DB_NAME={'SET' if DB_NAME else 'MISSING'}, "
+            f"DB_USER={'SET' if DB_USER else 'MISSING'}, "
+            f"DB_PASS={'SET' if DB_PASS else 'MISSING'}"
+        )
         sys.exit(1)
     DATABASE_URL = (
         f"mysql+pymysql://{DB_USER}:{DB_PASS}"
@@ -88,7 +114,7 @@ def get_engine():
     """
     ca_path = Path(CA_CERT_PATH)
 
-    # Method 1: CA cert with ssl_ca (PyMySQL native)
+    # Method 1: CA cert with verification
     if ca_path.exists():
         logger.info(f"Method 1 — CA cert: {ca_path}")
         engine = create_engine(
@@ -116,7 +142,7 @@ def get_engine():
             logger.info("Connected via Method 2 (CA cert, no verify)")
             return engine
 
-    # Method 3: SSL required, no cert
+    # Method 3: SSL without cert
     logger.info("Method 3 — SSL without cert")
     engine = create_engine(
         DATABASE_URL,
