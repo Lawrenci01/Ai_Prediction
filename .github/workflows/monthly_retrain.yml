@@ -21,19 +21,20 @@ jobs:
     timeout-minutes: 120
 
     env:
-      DATABASE_URL:   ${{ secrets.DATABASE_URL }}
-      DB_HOST:        ${{ secrets.DB_HOST }}
-      DB_PORT:        ${{ secrets.DB_PORT }}
-      DB_NAME:        ${{ secrets.DB_NAME }}
-      DB_USER:        ${{ secrets.DB_USER }}
-      DB_PASS:        ${{ secrets.DB_PASS }}
-      MODEL_DIR:      ${{ vars.MODEL_DIR }}
-      MIN_NEW_ROWS:   ${{ vars.MIN_NEW_ROWS }}
-      RETRAIN_DAY:    ${{ vars.RETRAIN_DAY }}
-      RETRAIN_HOUR:   ${{ vars.RETRAIN_HOUR }}
-      RETRAIN_MINUTE: ${{ vars.RETRAIN_MINUTE }}
-      LLM_BACKEND:    ${{ vars.LLM_BACKEND }}
-      GROQ_MODEL:     ${{ vars.GROQ_MODEL }}
+      DATABASE_URL:     ${{ secrets.DATABASE_URL }}
+      DB_PORT:          ${{ secrets.DB_PORT }}
+      DB_NAME:          ${{ secrets.DB_NAME }}
+      DB_USER:          ${{ secrets.DB_USER }}
+      DB_PASS:          ${{ secrets.DB_PASS }}
+      MODEL_DIR:        ${{ secrets.MODEL_DIR }}
+      DATA_FILE:        ${{ secrets.DATA_FILE }}
+      MIN_NEW_ROWS:     ${{ secrets.MIN_NEW_ROWS }}
+      RETRAIN_DAY:      ${{ secrets.RETRAIN_DAY }}
+      RETRAIN_HOUR:     ${{ secrets.RETRAIN_HOUR }}
+      RETRAIN_MINUTE:   ${{ secrets.RETRAIN_MINUTE }}
+      LLM_BACKEND:      ${{ secrets.LLM_BACKEND }}
+      GROQ_MODEL:       ${{ secrets.GROQ_MODEL }}
+      DATA_FETCH_HOURS: ${{ secrets.DATA_FETCH_HOURS }}
 
     steps:
       - name: Checkout repository
