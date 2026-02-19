@@ -2,7 +2,7 @@ name: Monthly Retrain
 
 on:
   schedule:
-    - cron: "0 2 28 * *"
+    - cron: "0 2 28 * *"  # 2:00 AM on the 28th of every month
   workflow_dispatch:
     inputs:
       evaluate_only:
@@ -22,7 +22,6 @@ jobs:
 
     env:
       DATABASE_URL:    ${{ secrets.DATABASE_URL }}
-      GROQ_API_KEY:    ${{ secrets.GROQ_API_KEY }}
       DB_HOST:         ${{ secrets.DB_HOST }}
       DB_PORT:         ${{ secrets.DB_PORT }}
       DB_NAME:         ${{ secrets.DB_NAME }}
@@ -54,11 +53,9 @@ jobs:
 
       - name: Run retrain scheduler
         run: |
-          # Move to repo root
+          # Go to repo root
           cd $GITHUB_WORKSPACE
-
-          # Ensure Python can find 'app' package
-          export PYTHONPATH=$PYTHONPATH:$(pwd)
+          export PYTHONPATH=$GITHUB_WORKSPACE
 
           if [ "${{ github.event.inputs.evaluate_only }}" == "true" ]; then
             echo "Running in evaluate-only mode..."
@@ -66,7 +63,6 @@ jobs:
           else
             echo "Running full retrain with accumulated data..."
             python -m app.scheduler.retrain_scheduler --run-now
-          fi
 
       - name: Commit retrain history
         if: success()

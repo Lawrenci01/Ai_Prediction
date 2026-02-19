@@ -21,3 +21,6 @@ httpx==0.27.2
 # Environment
 python-dotenv==1.0.1
 
+pandas
+sqlalchemy
+pymysql
