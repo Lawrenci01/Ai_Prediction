@@ -62,16 +62,28 @@ jobs:
           echo "MIN_NEW_ROWS     : ${{ secrets.MIN_NEW_ROWS != '' }}"
           echo "DATA_FETCH_HOURS : ${{ secrets.DATA_FETCH_HOURS != '' }}"
           echo "MODEL_DIR        : ${{ secrets.MODEL_DIR != '' }}"
-          echo "CA cert exists   : $(test -f ${{ github.workspace }}/ca.pem && echo true || echo false)"
+          echo "ca.pem exists    : $(test -f ${{ github.workspace }}/ca.pem && echo YES || echo NO)"
+
+      - name: Debug env vars
+        run: |
+          echo "DB_HOST  empty? $([ -z "$DB_HOST"  ] && echo YES || echo NO)"
+          echo "DB_PORT  empty? $([ -z "$DB_PORT"  ] && echo YES || echo NO)"
+          echo "DB_NAME  empty? $([ -z "$DB_NAME"  ] && echo YES || echo NO)"
+          echo "DB_USER  empty? $([ -z "$DB_USER"  ] && echo YES || echo NO)"
+          echo "DB_PASS  empty? $([ -z "$DB_PASS"  ] && echo YES || echo NO)"
+          echo "MIN_NEW_ROWS     = $MIN_NEW_ROWS"
+          echo "DATA_FETCH_HOURS = $DATA_FETCH_HOURS"
+          echo "CA_CERT_PATH     = $CA_CERT_PATH"
+          echo "ca.pem exists?   $(test -f ca.pem && echo YES || echo NO)"
 
       - name: Validate required secrets
         run: |
           missing=()
-          [ -z "$DB_HOST" ]  && missing+=("DB_HOST")
-          [ -z "$DB_NAME" ]  && missing+=("DB_NAME")
-          [ -z "$DB_USER" ]  && missing+=("DB_USER")
-          [ -z "$DB_PASS" ]  && missing+=("DB_PASS")
-          [ -z "$DB_PORT" ]  && missing+=("DB_PORT")
+          [ -z "$DB_HOST" ] && missing+=("DB_HOST")
+          [ -z "$DB_NAME" ] && missing+=("DB_NAME")
+          [ -z "$DB_USER" ] && missing+=("DB_USER")
+          [ -z "$DB_PASS" ] && missing+=("DB_PASS")
+          [ -z "$DB_PORT" ] && missing+=("DB_PORT")
           if [ ${#missing[@]} -gt 0 ]; then
             echo "::error::Missing required secrets: ${missing[*]}"
             exit 1
@@ -82,7 +94,6 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE
           export PYTHONPATH=$GITHUB_WORKSPACE
-
           if [ "${{ github.event.inputs.evaluate_only }}" == "true" ]; then
             echo "Running in evaluate-only mode..."
             python -m app.scheduler.retrain_scheduler --evaluate-only
@@ -116,14 +127,3 @@ jobs:
         if: failure()
         run: |
           echo "::error::Monthly retrain FAILED on $(date -u '+%Y-%m-%d %H:%M UTC')"
-          - name: Debug all secrets
-        run: |
-          echo "DB_HOST  empty? $([ -z "$DB_HOST"  ] && echo YES || echo NO)"
-          echo "DB_PORT  empty? $([ -z "$DB_PORT"  ] && echo YES || echo NO)"
-          echo "DB_NAME  empty? $([ -z "$DB_NAME"  ] && echo YES || echo NO)"
-          echo "DB_USER  empty? $([ -z "$DB_USER"  ] && echo YES || echo NO)"
-          echo "DB_PASS  empty? $([ -z "$DB_PASS"  ] && echo YES || echo NO)"
-          echo "MIN_NEW_ROWS      = $MIN_NEW_ROWS"
-          echo "DATA_FETCH_HOURS  = $DATA_FETCH_HOURS"
-          echo "CA_CERT_PATH      = $CA_CERT_PATH"
-          echo "ca.pem exists?    $(test -f ca.pem && echo YES || echo NO)"
