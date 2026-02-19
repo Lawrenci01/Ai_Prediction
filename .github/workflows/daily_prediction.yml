@@ -2,8 +2,8 @@ name: Daily Prediction
 
 on:
   schedule:
-    - cron: "0 1 * * *"   # Every day at 1:00 AM UTC
-  workflow_dispatch:        # Allow manual trigger from GitHub UI
+    - cron: "0 1 * * *"
+  workflow_dispatch:
 
 jobs:
   predict:
@@ -12,53 +12,56 @@ jobs:
     timeout-minutes: 30
 
     env:
-      # --- Secrets (sensitive) ---
-      DATABASE_URL:     ${{ secrets.DATABASE_URL }}
+      DATABASE_URL:     mysql+aiomysql://${{ secrets.DB_USER }}:${{ secrets.DB_PASS }}@${{ secrets.DB_HOST }}:${{ secrets.DB_PORT }}/${{ secrets.DB_NAME }}
+      DB_HOST:          ${{ secrets.DB_HOST }}
+      DB_PORT:          ${{ secrets.DB_PORT }}
+      DB_NAME:          ${{ secrets.DB_NAME }}
+      DB_USER:          ${{ secrets.DB_USER }}
+      DB_PASS:          ${{ secrets.DB_PASS }}
       GROQ_API_KEY:     ${{ secrets.GROQ_API_KEY }}
-
-      # --- Variables (non-sensitive config) ---
-      MODEL_DIR:        ${{ vars.MODEL_DIR }}
-      DATA_FILE:        ${{ vars.DATA_FILE }}
-      DATA_FETCH_HOURS: ${{ vars.DATA_FETCH_HOURS }}
-      LLM_BACKEND:      ${{ vars.LLM_BACKEND }}
-      GROQ_MODEL:       ${{ vars.GROQ_MODEL }}
-      SCHEDULER_HOUR:   ${{ vars.SCHEDULER_HOUR }}
-      SCHEDULER_MINUTE: ${{ vars.SCHEDULER_MINUTE }}
+      GROQ_MODEL:       ${{ secrets.GROQ_MODEL }}
+      LLM_BACKEND:      ${{ secrets.LLM_BACKEND }}
+      DATA_FETCH_HOURS: ${{ secrets.DATA_FETCH_HOURS }}
+      MODEL_DIR:        ${{ secrets.MODEL_DIR }}
+      CA_CERT_PATH:     ${{ github.workspace }}/ca.pem
+      SCHEDULER_HOUR:   "1"
+      SCHEDULER_MINUTE: "0"
 
     steps:
-      # ------------------------------------------------------------------ #
-      # 1. Checkout repo
-      # ------------------------------------------------------------------ #
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ------------------------------------------------------------------ #
-      # 2. Set up Python 3.11
-      # ------------------------------------------------------------------ #
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
 
-      # ------------------------------------------------------------------ #
-      # 3. Install dependencies
-      # ------------------------------------------------------------------ #
       - name: Install dependencies
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ------------------------------------------------------------------ #
-      # 4. Run daily prediction
-      # ------------------------------------------------------------------ #
+      - name: Validate required secrets
+        run: |
+          missing=()
+          [ -z "$DB_HOST" ] && missing+=("DB_HOST")
+          [ -z "$DB_NAME" ] && missing+=("DB_NAME")
+          [ -z "$DB_USER" ] && missing+=("DB_USER")
+          [ -z "$DB_PASS" ] && missing+=("DB_PASS")
+          [ -z "$DB_PORT" ] && missing+=("DB_PORT")
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing required secrets: ${missing[*]}"
+            exit 1
+          fi
+          echo "All required secrets are present."
+
       - name: Run daily prediction
         run: |
+          cd $GITHUB_WORKSPACE
+          export PYTHONPATH=$GITHUB_WORKSPACE
           python -m app.scheduler.daily_scheduler --run-now
 
-      # ------------------------------------------------------------------ #
-      # 5. Upload logs as artifact (for inspection)
-      # ------------------------------------------------------------------ #
       - name: Upload prediction logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -67,9 +70,6 @@ jobs:
           path: logs/
           retention-days: 7
 
-      # ------------------------------------------------------------------ #
-      # 6. Notify on failure
-      # ------------------------------------------------------------------ #
       - name: Notify on failure
         if: failure()
         run: |
