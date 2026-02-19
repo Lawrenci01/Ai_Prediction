@@ -52,14 +52,15 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
+      # ✅ FIXED HERE
       - name: Run retrain scheduler
         run: |
           if [ "${{ github.event.inputs.evaluate_only }}" == "true" ]; then
             echo "Running in evaluate-only mode..."
-            python retrain_scheduler.py --evaluate-only
+            python -m app.scheduler.retrain_scheduler --evaluate-only
           else
             echo "Running full retrain with accumulated data..."
-            python retrain_scheduler.py --run-now
+            python -m app.scheduler.retrain_scheduler --run-now
           fi
 
       - name: Commit retrain history
