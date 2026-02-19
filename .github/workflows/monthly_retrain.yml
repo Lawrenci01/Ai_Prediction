@@ -22,19 +22,19 @@ jobs:
 
     env:
       DATABASE_URL:     ${{ secrets.DATABASE_URL }}
+      DB_HOST:          ${{ secrets.DB_HOST }}
       DB_PORT:          ${{ secrets.DB_PORT }}
       DB_NAME:          ${{ secrets.DB_NAME }}
       DB_USER:          ${{ secrets.DB_USER }}
       DB_PASS:          ${{ secrets.DB_PASS }}
       MODEL_DIR:        ${{ secrets.MODEL_DIR }}
-      DATA_FILE:        ${{ secrets.DATA_FILE }}
       MIN_NEW_ROWS:     ${{ secrets.MIN_NEW_ROWS }}
+      DATA_FETCH_HOURS: ${{ secrets.DATA_FETCH_HOURS }}
       RETRAIN_DAY:      ${{ secrets.RETRAIN_DAY }}
       RETRAIN_HOUR:     ${{ secrets.RETRAIN_HOUR }}
       RETRAIN_MINUTE:   ${{ secrets.RETRAIN_MINUTE }}
       LLM_BACKEND:      ${{ secrets.LLM_BACKEND }}
       GROQ_MODEL:       ${{ secrets.GROQ_MODEL }}
-      DATA_FETCH_HOURS: ${{ secrets.DATA_FETCH_HOURS }}
 
     steps:
       - name: Checkout repository
@@ -51,6 +51,17 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Debug secrets presence
+        run: |
+          echo "DB_HOST set    : ${{ secrets.DB_HOST != '' }}"
+          echo "DB_PORT set    : ${{ secrets.DB_PORT != '' }}"
+          echo "DB_NAME set    : ${{ secrets.DB_NAME != '' }}"
+          echo "DB_USER set    : ${{ secrets.DB_USER != '' }}"
+          echo "DB_PASS set    : ${{ secrets.DB_PASS != '' }}"
+          echo "MIN_NEW_ROWS   : ${{ secrets.MIN_NEW_ROWS != '' }}"
+          echo "DATA_FETCH_HRS : ${{ secrets.DATA_FETCH_HOURS != '' }}"
+          echo "MODEL_DIR      : ${{ secrets.MODEL_DIR != '' }}"
+
       - name: Validate required secrets
         run: |
           missing=()
@@ -58,6 +69,7 @@ jobs:
           [ -z "$DB_NAME" ]  && missing+=("DB_NAME")
           [ -z "$DB_USER" ]  && missing+=("DB_USER")
           [ -z "$DB_PASS" ]  && missing+=("DB_PASS")
+          [ -z "$DB_PORT" ]  && missing+=("DB_PORT")
           if [ ${#missing[@]} -gt 0 ]; then
             echo "::error::Missing required secrets: ${missing[*]}"
             exit 1
