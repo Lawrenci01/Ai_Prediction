@@ -52,9 +52,14 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ✅ FIXED HERE
       - name: Run retrain scheduler
         run: |
+          # Move to repo root
+          cd $GITHUB_WORKSPACE
+
+          # Ensure Python can find 'app' package
+          export PYTHONPATH=$PYTHONPATH:$(pwd)
+
           if [ "${{ github.event.inputs.evaluate_only }}" == "true" ]; then
             echo "Running in evaluate-only mode..."
             python -m app.scheduler.retrain_scheduler --evaluate-only
