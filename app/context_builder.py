@@ -1,31 +1,10 @@
-"""
-Context Builder
-===============
-Builds structured context dicts from recent sensor readings.
-Used to pass current + historical data to the insight engine.
-"""
-
 import pandas as pd
-import numpy as np
-from datetime import datetime
-
-import sys
 from pathlib import Path
+import sys
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 
 def build_current_readings(df: pd.DataFrame) -> dict:
-    """
-    Extract the most recent readings as a clean dict.
-
-    Parameters
-    ----------
-    df : DataFrame with timestamp, co2_ppm, temperature_c, humidity_percent
-
-    Returns
-    -------
-    dict — { co2_ppm, temperature_c, humidity_percent }
-    """
     latest = df.sort_values("timestamp").iloc[-1]
     return {
         "co2_ppm":          round(float(latest["co2_ppm"]), 2),
@@ -35,21 +14,9 @@ def build_current_readings(df: pd.DataFrame) -> dict:
 
 
 def build_historical_stats(df: pd.DataFrame, hours: int = 24) -> dict:
-    """
-    Build summary statistics from the last N hours of data.
-
-    Parameters
-    ----------
-    df    : DataFrame with climate columns
-    hours : how many hours to look back
-
-    Returns
-    -------
-    dict of stats per variable
-    """
-    df = df.sort_values("timestamp").tail(hours)
-
+    df    = df.sort_values("timestamp").tail(hours)
     stats = {}
+
     for col in ["co2_ppm", "temperature_c", "humidity_percent"]:
         if col in df.columns:
             stats[col] = {
@@ -63,22 +30,7 @@ def build_historical_stats(df: pd.DataFrame, hours: int = 24) -> dict:
     return stats
 
 
-def build_forecast_series(temp_fc: list,
-                           hum_fc: list,
-                           co2_fc: list) -> list:
-    """
-    Merge three separate forecast lists into one unified series.
-
-    Parameters
-    ----------
-    temp_fc : list of {hour, predicted_value} for temperature
-    hum_fc  : list of {hour, predicted_value} for humidity
-    co2_fc  : list of {hour, predicted_value} for CO2
-
-    Returns
-    -------
-    list of {hour, temperature_c, humidity_percent, co2_ppm}
-    """
+def build_forecast_series(temp_fc: list, hum_fc: list, co2_fc: list) -> list:
     series = []
     for i in range(min(len(temp_fc), len(hum_fc), len(co2_fc))):
         series.append({

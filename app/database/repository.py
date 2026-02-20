@@ -1,15 +1,7 @@
-"""
-Database Repository
-====================
-All DB read/write operations.
-Updated to match exact MySQL schema:
-  sensor_data table: co2_density, humidity, recorded_at
-  sensor table: sensor_id (INT), sensor_name, barangay_id
-"""
-
 import logging
 from datetime import datetime, date, timedelta
 from typing import Optional
+
 import pandas as pd
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, and_
@@ -22,22 +14,11 @@ from app.database.models import (
 logger = logging.getLogger(__name__)
 
 
-# ============================================================================
-# SENSOR DATA — read IoT data and remap columns for model
-# ============================================================================
-
 async def fetch_recent_sensor_data(
     db: AsyncSession,
     hours: int = 336,
     sensor_id: Optional[int] = None,
 ) -> pd.DataFrame:
-    """
-    Fetch recent rows from sensor_data.
-    Renames columns to match feature_engineer.py:
-        recorded_at  → timestamp
-        co2_density  → co2_ppm
-        humidity     → humidity_percent
-    """
     since = datetime.utcnow() - timedelta(hours=hours)
 
     query = (
@@ -64,8 +45,6 @@ async def fetch_recent_sensor_data(
     df = pd.DataFrame(rows, columns=[
         "recorded_at", "co2_density", "temperature_c", "humidity", "sensor_id"
     ])
-
-    # Rename to match model feature names
     df = df.rename(columns={
         "recorded_at": "timestamp",
         "co2_density": "co2_ppm",
@@ -85,7 +64,6 @@ async def fetch_recent_sensor_data(
 
 
 async def fetch_sensor_info(db: AsyncSession, sensor_id: int) -> dict:
-    """Fetch sensor name + barangay name for insight generation."""
     result = await db.execute(
         select(Sensor.sensor_id, Sensor.sensor_name, Barangay.barangay_name)
         .join(Barangay, Sensor.barangay_id == Barangay.barangay_id)
@@ -95,14 +73,13 @@ async def fetch_sensor_info(db: AsyncSession, sensor_id: int) -> dict:
     if not row:
         return {"sensor_id": sensor_id, "sensor_name": f"NODE-{sensor_id:02d}", "barangay_name": "Naga City"}
     return {
-        "sensor_id":    row.sensor_id,
-        "sensor_name":  row.sensor_name,
+        "sensor_id":     row.sensor_id,
+        "sensor_name":   row.sensor_name,
         "barangay_name": row.barangay_name,
     }
 
 
 async def fetch_all_active_sensors(db: AsyncSession) -> list:
-    """Return list of sensor_ids that have data in the last 24h."""
     since = datetime.utcnow() - timedelta(hours=24)
     result = await db.execute(
         select(SensorData.sensor_id)
@@ -112,10 +89,6 @@ async def fetch_all_active_sensors(db: AsyncSession) -> list:
     return [row.sensor_id for row in result.fetchall()]
 
 
-# ============================================================================
-# DAILY PREDICTIONS — write & read
-# ============================================================================
-
 async def save_daily_prediction(
     db: AsyncSession,
     prediction_date: date,
@@ -124,7 +97,6 @@ async def save_daily_prediction(
     summary: dict,
     hourly: list,
 ) -> DailyPrediction:
-    """Upsert daily prediction for one target + sensor."""
     pred_dt = datetime.combine(prediction_date, datetime.min.time())
 
     existing = await db.execute(
@@ -175,7 +147,6 @@ async def save_insight(
     insight_text: str,
     llm_backend: str = "groq",
 ) -> PredictionInsight:
-    """Save Groq insight for a prediction run."""
     pred_dt = datetime.combine(prediction_date, datetime.min.time())
     insight = PredictionInsight(
         prediction_date=pred_dt,
@@ -189,10 +160,6 @@ async def save_insight(
     logger.info(f"Saved insight for sensor={sensor_id} date={prediction_date}")
     return insight
 
-
-# ============================================================================
-# READ — for API endpoints
-# ============================================================================
 
 async def get_latest_predictions(db: AsyncSession, sensor_id: Optional[int] = None) -> list:
     latest_date_q = select(DailyPrediction.prediction_date).order_by(desc(DailyPrediction.prediction_date)).limit(1)
@@ -242,9 +209,11 @@ async def get_latest_insight(db: AsyncSession, sensor_id: Optional[int] = None) 
 
 async def get_insight_history(db: AsyncSession, days: int = 30, sensor_id: Optional[int] = None) -> list:
     since = datetime.utcnow() - timedelta(days=days)
-    q = (select(PredictionInsight)
-         .where(PredictionInsight.prediction_date >= since)
-         .order_by(desc(PredictionInsight.prediction_date)))
+    q = (
+        select(PredictionInsight)
+        .where(PredictionInsight.prediction_date >= since)
+        .order_by(desc(PredictionInsight.prediction_date))
+    )
     if sensor_id:
         q = q.where(PredictionInsight.sensor_id == sensor_id)
     return (await db.execute(q)).scalars().all()

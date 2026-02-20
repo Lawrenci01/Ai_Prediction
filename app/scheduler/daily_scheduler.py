@@ -1,23 +1,3 @@
-"""
-Daily Prediction Scheduler
-============================
-Runs once per day (default: 1 AM UTC).
-Supports single sensor or all active sensors.
-
-Flow per sensor:
-  1. Fetch last 14 days from sensor_data (MySQL)
-  2. Rename columns → co2_ppm, humidity_percent, timestamp
-  3. Feature engineering (build_features)
-  4. LSTM predictions → co2_ppm, temperature_c, humidity_percent
-  5. Save to daily_predictions + hourly_predictions
-  6. Groq insight → save to prediction_insights
-
-Usage:
-    python -m app.scheduler.daily_scheduler --run-now
-    python -m app.scheduler.daily_scheduler --sensor-id 1 --run-now
-    python -m app.scheduler.daily_scheduler   # starts loop
-"""
-
 import asyncio
 import logging
 import os
@@ -25,8 +5,8 @@ import sys
 import argparse
 from datetime import datetime, timedelta
 from pathlib import Path
-from dotenv import load_dotenv
 from typing import Optional
+from dotenv import load_dotenv
 
 load_dotenv()
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
@@ -48,10 +28,8 @@ SCHEDULER_MINUTE = int(os.getenv("SCHEDULER_MINUTE") or "0")
 DATA_FETCH_HOURS = int(os.getenv("DATA_FETCH_HOURS") or "336")
 LLM_BACKEND      = os.getenv("LLM_BACKEND", "groq")
 
-# Model target names (what model outputs)
 MODEL_TARGETS = ["co2_ppm", "temperature_c", "humidity_percent"]
 
-# DB column names for saving (maps back to sensor_data column names)
 TARGET_LABEL_MAP = {
     "co2_ppm":          "co2_density",
     "temperature_c":    "temperature_c",
@@ -65,58 +43,47 @@ UNIT_MAP = {
 }
 
 
-# ============================================================================
-# SINGLE SENSOR JOB
-# ============================================================================
-
 async def run_for_sensor(sensor_id: int):
-    """Run full prediction pipeline for one sensor."""
-    logger.info(f"── Sensor {sensor_id} ──────────────────────────────────")
+    logger.info(f"Starting prediction for sensor {sensor_id}")
 
-    # 1. Fetch IoT data
     async with AsyncSessionLocal() as db:
-        df_raw     = await fetch_recent_sensor_data(db, hours=DATA_FETCH_HOURS, sensor_id=sensor_id)
+        df_raw      = await fetch_recent_sensor_data(db, hours=DATA_FETCH_HOURS, sensor_id=sensor_id)
         sensor_info = await fetch_sensor_info(db, sensor_id)
 
     if df_raw.empty or len(df_raw) < 170:
-        logger.warning(f"Sensor {sensor_id}: not enough data ({len(df_raw)} rows). Need 170+. Skipping.")
+        logger.warning(f"Sensor {sensor_id}: insufficient data ({len(df_raw)} rows, need 170+). Skipping.")
         return False
 
     logger.info(f"Sensor {sensor_id}: {len(df_raw):,} rows | {df_raw['timestamp'].min()} → {df_raw['timestamp'].max()}")
 
-    # 2. Feature engineering
     try:
         from app.pipeline.feature_engineer import build_features
         df_featured = build_features(df_raw, drop_nan=True)
     except Exception as e:
-        logger.error(f"Sensor {sensor_id}: feature engineering failed: {e}")
+        logger.error(f"Sensor {sensor_id}: feature engineering failed: {e}", exc_info=True)
         return False
 
     if len(df_featured) < 168:
-        logger.error(f"Sensor {sensor_id}: only {len(df_featured)} rows after feature eng. Need 168+.")
+        logger.error(f"Sensor {sensor_id}: only {len(df_featured)} rows after feature engineering, need 168+.")
         return False
 
-    # 3. Predictions
     try:
         from app.inference import daily_forecast
-        forecast = daily_forecast(df_raw, df_featured)
+        forecast        = daily_forecast(df_raw, df_featured)
         prediction_date = datetime.strptime(forecast["prediction_date"], "%Y-%m-%d").date()
     except Exception as e:
-        logger.error(f"Sensor {sensor_id}: prediction failed: {e}")
+        logger.error(f"Sensor {sensor_id}: prediction failed: {e}", exc_info=True)
         return False
 
-    # 4. Save predictions to DB
     async with AsyncSessionLocal() as db:
         for model_target in MODEL_TARGETS:
             target_data = forecast.get(model_target, {})
             if not target_data or target_data.get("mean") is None:
-                logger.warning(f"Sensor {sensor_id}: no prediction for {model_target}")
+                logger.warning(f"Sensor {sensor_id}: no prediction for {model_target}, skipping.")
                 continue
 
-            # Use DB-friendly label for storage
             db_target = TARGET_LABEL_MAP[model_target]
-
-            summary = {
+            summary   = {
                 "mean": target_data["mean"],
                 "min":  target_data["min"],
                 "max":  target_data["max"],
@@ -128,9 +95,8 @@ async def run_for_sensor(sensor_id: int):
                 await save_daily_prediction(db, prediction_date, sensor_id, db_target, summary, hourly)
                 logger.info(f"Sensor {sensor_id}: saved {db_target} mean={summary['mean']} {summary['unit']}")
             except Exception as e:
-                logger.error(f"Sensor {sensor_id}: DB save failed for {db_target}: {e}")
+                logger.error(f"Sensor {sensor_id}: DB save failed for {db_target}: {e}", exc_info=True)
 
-    # 5. Groq insight
     try:
         from app.llm_engine import generate_insight
 
@@ -160,10 +126,10 @@ async def run_for_sensor(sensor_id: int):
                 insight_text=insight_text,
                 llm_backend=LLM_BACKEND,
             )
-        logger.info(f"Sensor {sensor_id}: insight → {insight_text[:80]}...")
+        logger.info(f"Sensor {sensor_id}: insight saved — {insight_text[:80]}...")
 
     except Exception as e:
-        logger.error(f"Sensor {sensor_id}: insight failed: {e}")
+        logger.error(f"Sensor {sensor_id}: insight generation failed: {e}", exc_info=True)
 
     return True
 
@@ -179,14 +145,8 @@ def _find_peak_hour(forecast: dict, target: str) -> int:
         return peak.get("hour", 13)
 
 
-# ============================================================================
-# MAIN JOB — all sensors or one
-# ============================================================================
-
 async def run_prediction_job(sensor_id: Optional[int] = None):
-    logger.info("=" * 60)
-    logger.info(f"🚀 Daily prediction job — {datetime.utcnow().isoformat()}")
-    logger.info("=" * 60)
+    logger.info(f"Daily prediction job started — {datetime.utcnow().isoformat()}")
 
     if sensor_id:
         sensors = [sensor_id]
@@ -202,19 +162,15 @@ async def run_prediction_job(sensor_id: Optional[int] = None):
     for sid in sensors:
         await run_for_sensor(sid)
 
-    logger.info("✅ Daily prediction job complete.")
+    logger.info("Daily prediction job complete.")
     return True
 
 
-# ============================================================================
-# SCHEDULER LOOP
-# ============================================================================
-
 async def scheduler_loop(sensor_id=None):
-    logger.info(f"📅 Scheduler started — daily at {SCHEDULER_HOUR:02d}:{SCHEDULER_MINUTE:02d} UTC")
+    logger.info(f"Scheduler started — daily at {SCHEDULER_HOUR:02d}:{SCHEDULER_MINUTE:02d} UTC")
 
     if not await check_connection():
-        logger.error("❌ Cannot connect to MySQL. Check .env")
+        logger.error("Cannot connect to MySQL — check .env DB credentials.")
         return
 
     while True:
@@ -224,20 +180,15 @@ async def scheduler_loop(sensor_id=None):
             next_run += timedelta(days=1)
 
         wait = (next_run - now).total_seconds()
-        logger.info(f"⏰ Next run at {next_run.isoformat()} UTC ({wait/3600:.1f}h away)")
+        logger.info(f"Next run at {next_run.isoformat()} UTC ({wait/3600:.1f}h away)")
         await asyncio.sleep(wait)
         await run_prediction_job(sensor_id)
 
 
-# ============================================================================
-# ENTRYPOINT
-# ============================================================================
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--run-now",   action="store_true", help="Run immediately and exit")
-    parser.add_argument("--sensor-id", type=int, default=None, help="Run for a specific sensor_id only")
+    parser.add_argument("--run-now",   action="store_true")
+    parser.add_argument("--sensor-id", type=int, default=None)
     args = parser.parse_args()
 
     if args.run_now:

@@ -1,10 +1,10 @@
 ﻿import os
 import ssl as ssl_module
+import logging
 from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 from sqlalchemy import text
-import logging
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -27,7 +27,7 @@ engine = create_async_engine(
     max_overflow=20,
     pool_pre_ping=True,
     echo=False,
-    connect_args={"ssl": ssl_ctx}
+    connect_args={"ssl": ssl_ctx},
 )
 
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)

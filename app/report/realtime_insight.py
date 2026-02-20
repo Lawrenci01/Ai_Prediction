@@ -1,43 +1,7 @@
-"""
-Realtime Barangay Insight
-==========================
-GET /api/realtime/insight        — latest cached insight + averages
-GET /api/realtime/insight/history — last N rows from realtime_reports table
-
-Every 5 minutes (background task started in lifespan):
-  1. Query sensor_data — get latest reading per sensor via minute_stamp
-  2. JOIN sensor → barangay → compute per-barangay + city-wide averages
-  3. Call Groq for LLM insight
-  4. Save snapshot to realtime_reports table (minute_stamp granularity)
-  5. Cache result in memory — API serves from cache instantly
-
-Table: realtime_reports
-  - minute_stamp   DATETIME  (truncated to minute, UNIQUE — no duplicate snapshots)
-  - co2_avg, temp_avg, hum_avg, heat_index_avg
-  - top_barangay, top_carbon_level
-  - very_high_count, total_sensors, total_barangays
-  - insight_text, llm_success
-
-Add to main.py lifespan (BEFORE yield):
-    from app.report.realtime_insight import start_realtime_loop
-    realtime_task = asyncio.create_task(start_realtime_loop())
-
-Add to main.py lifespan (AFTER yield, cleanup):
-    realtime_task.cancel()
-    try:
-        await realtime_task
-    except asyncio.CancelledError:
-        pass
-
-Add router to main.py:
-    from app.report.realtime_insight import router as realtime_router
-    app.include_router(realtime_router)
-"""
-
 import asyncio
 import logging
-from datetime import datetime, timedelta
-from typing import Optional 
+from datetime import datetime
+from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import Column, Integer, Float, String, DateTime, Text, UniqueConstraint, select, desc, text
@@ -49,12 +13,8 @@ from app.llm_engine import _call_groq, heat_index, co2_risk_level, comfort_label
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-INTERVAL_SECONDS = 300  # 5 minutes
+INTERVAL_SECONDS = 300
 
-
-# ============================================================================
-# MODEL — realtime_reports table
-# ============================================================================
 
 class RealtimeReport(Base):
     __tablename__ = "realtime_reports"
@@ -63,34 +23,24 @@ class RealtimeReport(Base):
     )
 
     id               = Column(Integer, primary_key=True, autoincrement=True)
-    minute_stamp     = Column(DateTime, nullable=False, index=True)  # truncated to minute
+    minute_stamp     = Column(DateTime, nullable=False, index=True)
     generated_at     = Column(DateTime, default=datetime.utcnow)
-
-    # City-wide averages
     co2_avg          = Column(Float, nullable=True)
     temp_avg         = Column(Float, nullable=True)
     hum_avg          = Column(Float, nullable=True)
     heat_index_avg   = Column(Float, nullable=True)
-
-    # Context
     top_barangay     = Column(String(120), nullable=True)
-    top_carbon_level = Column(String(30),  nullable=True)
+    top_carbon_level = Column(String(30), nullable=True)
     very_high_count  = Column(Integer, default=0)
     total_sensors    = Column(Integer, default=0)
     total_barangays  = Column(Integer, default=0)
-
-    # LLM
     insight_text     = Column(Text, nullable=True)
-    llm_success      = Column(Integer, default=1)  # 1 = Groq, 0 = fallback
+    llm_success      = Column(Integer, default=1)
 
-
-# ============================================================================
-# IN-MEMORY CACHE — serves API instantly between DB writes
-# ============================================================================
 
 _cache: dict = {
-    "report":    None,   # latest RealtimeReport-like dict
-    "barangays": None,   # per-barangay breakdown
+    "report":    None,
+    "barangays": None,
     "cached_at": None,
 }
 
@@ -101,10 +51,6 @@ def _seconds_until_refresh() -> int:
     elapsed = (datetime.utcnow() - _cache["cached_at"]).total_seconds()
     return max(0, int(INTERVAL_SECONDS - elapsed))
 
-
-# ============================================================================
-# QUERY — latest reading per sensor via minute_stamp, grouped by barangay
-# ============================================================================
 
 async def _fetch_barangay_averages(db: AsyncSession) -> list[dict]:
     result = await db.execute(text("""
@@ -179,12 +125,8 @@ def _city_averages(barangays: list[dict]) -> dict:
     }
 
 
-# ============================================================================
-# LLM PROMPT
-# ============================================================================
-
 def _build_prompt(city: dict, barangays: list[dict]) -> str:
-    now_str   = datetime.utcnow().strftime("%B %d, %Y %H:%M UTC")
+    now_str    = datetime.utcnow().strftime("%B %d, %Y %H:%M UTC")
     top3_lines = "\n".join([
         f"  - {b['barangay_name']}: CO2={b['co2_avg']} ppm, "
         f"Temp={b['temp_avg']}°C, Hum={b['hum_avg']}%, "
@@ -253,12 +195,7 @@ def _fallback(city: dict) -> str:
     )
 
 
-# ============================================================================
-# CORE JOB — runs every 5 minutes
-# ============================================================================
-
 async def _run_realtime_job():
-    """Fetch averages, call Groq, save to DB, update cache."""
     try:
         async with AsyncSessionLocal() as db:
             barangays = await _fetch_barangay_averages(db)
@@ -267,10 +204,9 @@ async def _run_realtime_job():
             logger.warning("Realtime job: no sensor data found.")
             return
 
-        city = _city_averages(barangays)
-
-        # Groq insight
+        city        = _city_averages(barangays)
         llm_success = 1
+
         try:
             insight = await _call_groq(_build_prompt(city, barangays))
         except Exception as e:
@@ -278,7 +214,6 @@ async def _run_realtime_job():
             insight     = _fallback(city)
             llm_success = 0
 
-        # Truncate to current minute for minute_stamp
         now          = datetime.utcnow()
         minute_stamp = now.replace(second=0, microsecond=0)
 
@@ -298,7 +233,6 @@ async def _run_realtime_job():
             llm_success      = llm_success,
         )
 
-        # Upsert — skip if same minute already saved (unique constraint)
         async with AsyncSessionLocal() as db:
             existing = await db.execute(
                 select(RealtimeReport).where(RealtimeReport.minute_stamp == minute_stamp)
@@ -314,8 +248,7 @@ async def _run_realtime_job():
             else:
                 logger.info(f"Realtime report already exists for {minute_stamp}, skipping.")
 
-        # Update in-memory cache
-        _cache["report"]    = {
+        _cache["report"] = {
             "minute_stamp":     minute_stamp.isoformat(),
             "generated_at":     now.isoformat(),
             "co2_avg":          city["co2_avg"],
@@ -339,27 +272,15 @@ async def _run_realtime_job():
         logger.error(f"Realtime job failed: {e}", exc_info=True)
 
 
-# ============================================================================
-# BACKGROUND LOOP — started from main.py lifespan
-# ============================================================================
-
 async def start_realtime_loop():
-    """
-    Infinite loop that runs the realtime job every 5 minutes.
-    Align to the nearest 5-minute boundary on the clock
-    (e.g. :00, :05, :10 ... :55) so reports are predictable.
-    """
-    logger.info(f"⏱  Realtime insight loop started — interval={INTERVAL_SECONDS}s")
+    logger.info(f"Realtime insight loop started — interval={INTERVAL_SECONDS}s")
 
-    # Ensure table exists
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    # Run once immediately on startup
     await _run_realtime_job()
 
     while True:
-        # Sleep until next 5-minute boundary
         now          = datetime.utcnow()
         minutes_past = now.minute % 5
         seconds_past = now.second
@@ -367,30 +288,20 @@ async def start_realtime_loop():
         if wait <= 0:
             wait += 300
 
-        logger.info(f"⏰ Next realtime snapshot in {wait}s")
+        logger.info(f"Next realtime snapshot in {wait}s")
         await asyncio.sleep(wait)
         await _run_realtime_job()
 
-
-# ============================================================================
-# ENDPOINTS
-# ============================================================================
 
 @router.get("/api/realtime/insight")
 async def get_realtime_insight(
     force_refresh: bool = False,
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Latest city-wide realtime insight.
-    Served from in-memory cache — refreshes every 5 minutes automatically.
-    Use ?force_refresh=true to trigger an immediate recalculation.
-    """
     if force_refresh:
         await _run_realtime_job()
 
     if _cache["report"] is None:
-        # No data yet — run once synchronously
         await _run_realtime_job()
 
     if _cache["report"] is None:
@@ -412,29 +323,20 @@ async def get_realtime_insight(
 
 @router.get("/api/realtime/insight/history")
 async def get_realtime_history(
-    limit: int = Query(default=12, ge=1, le=1440, description="Number of snapshots — default 12 (60 min), max 1440 (5 days)"),
-    from_ts: Optional[datetime] = Query(default=None, alias="from", description="Start timestamp e.g. 2026-02-19T20:00:00"),
-    to_ts:   Optional[datetime] = Query(default=None, alias="to",   description="End timestamp   e.g. 2026-02-19T22:00:00"),
+    limit:   int = Query(default=12, ge=1, le=1440),
+    from_ts: Optional[datetime] = Query(default=None, alias="from"),
+    to_ts:   Optional[datetime] = Query(default=None, alias="to"),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Realtime snapshots from realtime_reports table.
-
-    Filter options (use one or combine):
-      ?limit=12                                          → last 60 minutes
-      ?from=2026-02-19T20:00:00&to=2026-02-19T22:00:00  → specific range
-      ?from=2026-02-19T20:00:00                          → from a point until now
-    """
     q = select(RealtimeReport)
 
     if from_ts and to_ts:
-        q = q.where(RealtimeReport.minute_stamp >= from_ts)              .where(RealtimeReport.minute_stamp <= to_ts)
+        q = q.where(RealtimeReport.minute_stamp >= from_ts).where(RealtimeReport.minute_stamp <= to_ts)
     elif from_ts:
         q = q.where(RealtimeReport.minute_stamp >= from_ts)
     elif to_ts:
         q = q.where(RealtimeReport.minute_stamp <= to_ts)
     else:
-        # No range given — fall back to latest N snapshots
         q = q.order_by(desc(RealtimeReport.minute_stamp)).limit(limit)
 
     if from_ts or to_ts:
@@ -444,9 +346,9 @@ async def get_realtime_history(
     rows   = result.scalars().all()
 
     return {
-        "count":    len(rows),
-        "from":     from_ts.isoformat() if from_ts else None,
-        "to":       to_ts.isoformat()   if to_ts   else None,
+        "count":     len(rows),
+        "from":      from_ts.isoformat() if from_ts else None,
+        "to":        to_ts.isoformat()   if to_ts   else None,
         "snapshots": [
             {
                 "minute_stamp":     r.minute_stamp.isoformat(),

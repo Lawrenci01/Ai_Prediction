@@ -1,9 +1,3 @@
-"""
-LSTM Model Architecture
-========================
-Builds, saves, and loads the LSTM for climate forecasting.
-"""
-
 import logging
 import numpy as np
 from pathlib import Path
@@ -35,24 +29,21 @@ except ImportError:
 
 
 def get_lstm_key(target: str) -> str:
-    if "co2" in target:
-        return "lstm_co2"
-    elif "temp" in target:
-        return "lstm_temperature"
-    elif "humid" in target:
-        return "lstm_humidity"
-    else:
-        raise ValueError(f"Unknown target: {target}")
+    if "co2"   in target: return "lstm_co2"
+    if "temp"  in target: return "lstm_temperature"
+    if "humid" in target: return "lstm_humidity"
+    raise ValueError(f"Unknown target: {target}")
 
 
-def build_lstm_model(input_shape: tuple,
-                     target: str,
-                     lstm_units: list = None,
-                     dropout: float = None,
-                     dense_units: list = None,
-                     lr: float = None,
-                     bidirectional: bool = False):
-
+def build_lstm_model(
+    input_shape:   tuple,
+    target:        str,
+    lstm_units:    list  = None,
+    dropout:       float = None,
+    dense_units:   list  = None,
+    lr:            float = None,
+    bidirectional: bool  = False,
+):
     if not TF_AVAILABLE:
         raise ImportError("TensorFlow required.")
 
@@ -79,13 +70,10 @@ def build_lstm_model(input_shape: tuple,
         model.add(Dropout(dropout / 2, name=f"drop_dense_{i+1}"))
 
     model.add(Dense(PREDICTION_HORIZON, activation="linear", name="output"))
-
-    # FIX: Removed CosineDecayRestarts schedule — using a plain float lr
-    # so that ReduceLROnPlateau in get_callbacks() can adjust it freely.
     model.compile(
         optimizer=Adam(learning_rate=lr),
         loss="huber",
-        metrics=["mae", "mse"]
+        metrics=["mae", "mse"],
     )
 
     logger.info(
@@ -102,29 +90,27 @@ def get_callbacks(target: str, log_dir: str = None) -> list:
         return []
 
     ckpt_path = get_model_path(get_lstm_key(target))
-    logger.info(f"  ModelCheckpoint: {ckpt_path}")
+    logger.info(f"ModelCheckpoint: {ckpt_path}")
 
     callbacks = [
         EarlyStopping(
             monitor="val_loss",
             patience=PATIENCE,
             restore_best_weights=True,
-            verbose=1
+            verbose=1,
         ),
         ModelCheckpoint(
             filepath=str(ckpt_path),
             monitor="val_loss",
             save_best_only=True,
-            verbose=1
+            verbose=1,
         ),
-        # FIX: This now works correctly because the optimizer uses a plain
-        # float lr instead of a LearningRateSchedule object.
         ReduceLROnPlateau(
             monitor="val_loss",
             factor=0.5,
             patience=7,
             min_lr=1e-6,
-            verbose=1
+            verbose=1,
         ),
     ]
     if log_dir:
@@ -143,7 +129,7 @@ def save_lstm(model, target: str):
 def load_lstm(target: str):
     if not TF_AVAILABLE:
         raise ImportError("TensorFlow required.")
-    path = get_model_path(get_lstm_key(target))
+    path  = get_model_path(get_lstm_key(target))
     model = load_model(path)
     logger.info(f"LSTM loaded: {path}")
     return model

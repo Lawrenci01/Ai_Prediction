@@ -1,33 +1,9 @@
-"""
-LLM Insight Engine
-==================
-AI-powered insight engine for IoT sensor climate predictions.
-Uses Ollama (local) or Groq (production) to generate genuine
-reasoning-based insights — not if/else templates.
-
-Backends:
-    - Ollama (default): local, offline, free
-    - Groq: production, fast, free tier available
-
-Set in .env:
-    LLM_BACKEND=ollama        # or groq
-    OLLAMA_MODEL=llama3.2:3b
-    OLLAMA_URL=http://localhost:11434
-    GROQ_API_KEY=your_key_here
-    GROQ_MODEL=llama-3.3-70b-versatile
-"""
-
 import logging
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
-
 logger = logging.getLogger(__name__)
-
-# ============================================================================
-# CONFIG
-# ============================================================================
 
 LLM_BACKEND  = os.getenv("LLM_BACKEND",  "ollama")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
@@ -35,10 +11,6 @@ OLLAMA_URL   = os.getenv("OLLAMA_URL",   "http://localhost:11434")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL   = os.getenv("GROQ_MODEL",   "llama-3.3-70b-versatile")
 
-
-# ============================================================================
-# CLIMATE SCIENCE CALCULATORS
-# ============================================================================
 
 def heat_index(temp_c: float, humidity: float) -> float:
     try:
@@ -82,25 +54,16 @@ def co2_risk_level(co2_ppm: float) -> str:
 
 
 def comfort_label(hi: float) -> str:
-    if hi < 27:  return "comfortable"
-    if hi < 32:  return "caution"
-    if hi < 41:  return "extreme caution"
-    if hi < 54:  return "danger"
+    if hi < 27: return "comfortable"
+    if hi < 32: return "caution"
+    if hi < 41: return "extreme caution"
+    if hi < 54: return "danger"
     return "extreme danger"
 
 
-# ============================================================================
-# PROMPT BUILDER
-# ============================================================================
-
-def _build_insight_prompt(sensor: dict,
-                           predicted: dict,
-                           peak_temp_hour: int,
-                           peak_co2_hour: int) -> str:
-
+def _build_insight_prompt(sensor: dict, predicted: dict, peak_temp_hour: int, peak_co2_hour: int) -> str:
     sensor_id = sensor.get("sensor_id", "NODE-01")
     barangay  = sensor.get("barangay", "Naga").title()
-
     co2_pred  = float(predicted.get("co2_ppm",          415.0))
     temp_pred = float(predicted.get("temperature_c",    28.0))
     hum_pred  = float(predicted.get("humidity_percent", 75.0))
@@ -108,7 +71,6 @@ def _build_insight_prompt(sensor: dict,
     co2_risk  = co2_risk_level(co2_pred)
     comfort   = comfort_label(hi_pred)
 
-    # Determine worst condition to drive recommendation
     if co2_pred >= 440:
         recommendation = "immediately improve ventilation and reduce indoor occupancy"
     elif co2_pred >= 420:
@@ -139,10 +101,6 @@ REQUIRED OUTPUT FORMAT (fill in the brackets with the values above):
 Output that exact sentence with those exact numbers. Do not change the values. Do not add anything else.
 """
 
-
-# ============================================================================
-# LLM BACKENDS
-# ============================================================================
 
 async def _call_ollama(prompt: str) -> str:
     import httpx
@@ -176,8 +134,8 @@ async def _call_groq(prompt: str) -> str:
                 "Content-Type":  "application/json",
             },
             json={
-                "model": GROQ_MODEL,
-                "messages": [{"role": "user", "content": prompt}],
+                "model":       GROQ_MODEL,
+                "messages":    [{"role": "user", "content": prompt}],
                 "temperature": 0.1,
                 "max_tokens":  100,
             }
@@ -192,14 +150,7 @@ async def _call_llm(prompt: str) -> str:
     return await _call_ollama(prompt)
 
 
-# ============================================================================
-# FALLBACK — used when LLM is unavailable
-# ============================================================================
-
-def _fallback_insight(sensor: dict,
-                       predicted: dict,
-                       peak_temp_hour: int,
-                       peak_co2_hour: int) -> str:
+def _fallback_insight(sensor: dict, predicted: dict, peak_temp_hour: int, peak_co2_hour: int) -> str:
     sensor_id = sensor.get("sensor_id", "NODE-01")
     barangay  = sensor.get("barangay", "Naga").title()
     co2       = float(predicted.get("co2_ppm",          415))
@@ -227,10 +178,6 @@ def _fallback_insight(sensor: dict,
         f"and humidity is at {hum:.0f}% — {rec}."
     )
 
-
-# ============================================================================
-# PUBLIC API
-# ============================================================================
 
 async def generate_insight(
     sensor:         dict,
