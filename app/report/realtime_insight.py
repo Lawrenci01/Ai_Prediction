@@ -37,6 +37,7 @@ Add router to main.py:
 import asyncio
 import logging
 from datetime import datetime, timedelta
+from typing import Optional 
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import Column, Integer, Float, String, DateTime, Text, UniqueConstraint, select, desc, text
