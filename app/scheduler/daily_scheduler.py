@@ -20,8 +20,18 @@ from app.database.repository import (
     save_insight,
 )
 
+LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+
+logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+
+os.makedirs("logs", exist_ok=True)
+log_filename = f"logs/prediction_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.log"
+file_handler = logging.FileHandler(log_filename)
+file_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+logging.getLogger().addHandler(file_handler)
+
+logger.info(f"Log file created: {log_filename}")
 
 SCHEDULER_HOUR   = int(os.getenv("SCHEDULER_HOUR")   or "1")
 SCHEDULER_MINUTE = int(os.getenv("SCHEDULER_MINUTE") or "0")

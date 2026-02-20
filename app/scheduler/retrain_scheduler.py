@@ -20,8 +20,46 @@ from app.pipeline.feature_engineer import build_features, load_feature_cols
 from app.pipeline.sequence_builder import build_sequences_for_target, _scaler_X_path
 from app.model.lstm import load_lstm, save_lstm, get_callbacks
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
+LOG_FORMAT = "%(asctime)s | %(levelname)s | %(message)s"
+
+logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 logger = logging.getLogger(__name__)
+
+os.makedirs("logs", exist_ok=True)
+log_filename = f"logs/retrain_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.log"
+file_handler = logging.FileHandler(log_filename)
+file_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+logging.getLogger().addHandler(file_handler)
+
+logger.info(f"Log file created: {log_filename}")
+
+METRICS_REPORT_PATH = "logs/metrics_report.txt"
+
+def _write_metrics_report(results: dict, mode: str, rows_used: int, date_from, date_to):
+    run_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    lines = [
+        "=" * 60,
+        f"  RETRAIN METRICS REPORT",
+        f"  Mode       : {mode}",
+        f"  Run time   : {run_time}",
+        f"  Rows used  : {rows_used:,}",
+        f"  Data from  : {date_from}",
+        f"  Data to    : {date_to}",
+        "=" * 60,
+        "",
+        f"{'Target':<25} {'MAE':>10} {'RMSE':>10}",
+        "-" * 47,
+    ]
+    for target, metrics in results.items():
+        lines.append(f"{target:<25} {metrics['MAE']:>10.4f} {metrics['RMSE']:>10.4f}")
+    lines += ["", "=" * 60]
+
+    report_text = "\n".join(lines)
+    with open(METRICS_REPORT_PATH, "w") as f:
+        f.write(report_text)
+
+    logger.info(f"Metrics report saved: {METRICS_REPORT_PATH}")
+    logger.info("\n" + report_text)
 
 
 def _get_env(key: str, default: str) -> str:
@@ -157,7 +195,9 @@ def load_last_30_days() -> pd.DataFrame | None:
 
 
 def run_evaluate(df: pd.DataFrame):
-    logger.info("Starting evaluation")
+    logger.info("=" * 60)
+    logger.info("MODE: EVALUATE ONLY")
+    logger.info("=" * 60)
 
     try:
         feature_cols = load_feature_cols()
@@ -204,13 +244,20 @@ def run_evaluate(df: pd.DataFrame):
         except Exception as e:
             logger.error(f"Evaluation failed for {target}: {e}", exc_info=True)
 
-    logger.info("Evaluation summary:")
-    for t, m in results.items():
-        logger.info(f"  {t:25s}  MAE={m['MAE']}  RMSE={m['RMSE']}")
+    if results:
+        _write_metrics_report(
+            results,
+            mode="Evaluate Only",
+            rows_used=len(df),
+            date_from=df["timestamp"].min(),
+            date_to=df["timestamp"].max(),
+        )
 
 
 def run_finetune(df: pd.DataFrame):
-    logger.info("Starting fine-tune")
+    logger.info("=" * 60)
+    logger.info("MODE: FULL FINE-TUNE")
+    logger.info("=" * 60)
 
     if len(df) < MIN_NEW_ROWS:
         logger.warning(f"Only {len(df)} rows available, minimum is {MIN_NEW_ROWS}. Aborting.")
@@ -228,6 +275,7 @@ def run_finetune(df: pd.DataFrame):
         logger.error(f"Feature engineering failed: {e}", exc_info=True)
         sys.exit(1)
 
+    results = {}
     for target in TARGET_COLS:
         logger.info(f"Fine-tuning: {target}")
         try:
@@ -244,18 +292,20 @@ def run_finetune(df: pd.DataFrame):
             y_train = data["y_train"]
             X_val   = data["X_val"]
             y_val   = data["y_val"]
+            X_test  = data["X_test"]
+            y_test  = data["y_test"]
 
             if len(X_train) == 0:
                 logger.warning(f"No training sequences for {target}, skipping.")
                 continue
 
-            logger.info(f"Sequences — train: {len(X_train):,}, val: {len(X_val):,}")
+            logger.info(f"Sequences — train: {len(X_train):,}, val: {len(X_val):,}, test: {len(X_test):,}")
 
             model           = load_lstm(target)
             callbacks       = get_callbacks(target)
             FINETUNE_EPOCHS = min(50, EPOCHS)
 
-            model.fit(
+            history = model.fit(
                 X_train, y_train,
                 validation_data=(X_val, y_val),
                 epochs=FINETUNE_EPOCHS,
@@ -263,6 +313,26 @@ def run_finetune(df: pd.DataFrame):
                 callbacks=callbacks,
                 verbose=1,
             )
+
+            final_train_loss = history.history["loss"][-1]
+            final_val_loss   = history.history.get("val_loss", [None])[-1]
+            epochs_ran       = len(history.history["loss"])
+            logger.info(f"{target}: trained {epochs_ran} epochs | train_loss={final_train_loss:.4f} | val_loss={final_val_loss:.4f}")
+
+            if len(X_test) > 0:
+                y_pred_scaled = model.predict(X_test, verbose=0)
+                y_pred = scaler_y.inverse_transform(y_pred_scaled.reshape(-1, 1)).reshape(y_pred_scaled.shape)
+                y_true = scaler_y.inverse_transform(y_test.reshape(-1, 1)).reshape(y_test.shape)
+                mae  = float(np.mean(np.abs(y_pred - y_true)))
+                rmse = float(np.sqrt(np.mean((y_pred - y_true) ** 2)))
+                results[target] = {
+                    "MAE":        round(mae, 4),
+                    "RMSE":       round(rmse, 4),
+                    "train_loss": round(final_train_loss, 4),
+                    "val_loss":   round(final_val_loss, 4) if final_val_loss else None,
+                    "epochs":     epochs_ran,
+                }
+                logger.info(f"{target}: MAE={mae:.4f}  RMSE={rmse:.4f}")
 
             save_lstm(model, target)
             logger.info(f"Fine-tune saved: {target}")
@@ -272,6 +342,16 @@ def run_finetune(df: pd.DataFrame):
             sys.exit(1)
 
     _save_retrain_history(df)
+
+    if results:
+        _write_metrics_report(
+            results,
+            mode="Full Fine-Tune",
+            rows_used=len(df),
+            date_from=df["timestamp"].min(),
+            date_to=df["timestamp"].max(),
+        )
+
     logger.info("All targets fine-tuned successfully.")
 
 
@@ -301,15 +381,21 @@ def main():
         logger.error("No mode specified. Use --evaluate-only or --run-now.")
         sys.exit(1)
 
+    logger.info(f"Retrain job started — {datetime.utcnow().isoformat()}")
+
     df = load_last_30_days()
     if df is None or df.empty:
         logger.warning("No data loaded from DB. Exiting.")
         sys.exit(1)
 
+    logger.info(f"Data loaded: {len(df):,} rows | {df['timestamp'].min()} → {df['timestamp'].max()}")
+
     if args.evaluate_only:
         run_evaluate(df)
     elif args.run_now:
         run_finetune(df)
+
+    logger.info(f"Retrain job complete — {datetime.utcnow().isoformat()}")
 
 
 if __name__ == "__main__":
