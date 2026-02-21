@@ -1,5 +1,8 @@
+import asyncio
 import logging
 import os
+
+import httpx
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -19,12 +22,17 @@ def heat_index(temp_c: float, humidity: float) -> float:
     try:
         t  = temp_c * 9 / 5 + 32
         rh = humidity
-        hi = (-42.379
-              + 2.04901523  * t + 10.14333127 * rh
-              - 0.22475541  * t * rh - 0.00683783 * t * t
-              - 0.05481717  * rh * rh + 0.00122874 * t * t * rh
-              + 0.00085282  * t * rh * rh
-              - 0.00000199  * t * t * rh * rh)
+        hi = (
+            -42.379
+            + 2.04901523  * t
+            + 10.14333127 * rh
+            - 0.22475541  * t  * rh
+            - 0.00683783  * t  * t
+            - 0.05481717  * rh * rh
+            + 0.00122874  * t  * t  * rh
+            + 0.00085282  * t  * rh * rh
+            - 0.00000199  * t  * t  * rh * rh
+        )
         return (hi - 32) * 5 / 9
     except Exception as e:
         logger.warning(f"heat_index failed (temp={temp_c}, hum={humidity}): {e}")
@@ -51,14 +59,15 @@ def comfort_label(hi: float) -> str:
 async def _call_groq(prompt: str) -> str:
     if not GROQ_API_KEY:
         raise ValueError("GROQ_API_KEY is not set.")
-    import asyncio
-    import httpx
     async with httpx.AsyncClient(timeout=30.0) as client:
         for attempt in range(3):
             try:
                 response = await client.post(
                     "https://api.groq.com/openai/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+                    headers={
+                        "Authorization": f"Bearer {GROQ_API_KEY}",
+                        "Content-Type":  "application/json",
+                    },
                     json={
                         "model":       GROQ_MODEL,
                         "messages":    [{"role": "user", "content": prompt}],
@@ -83,7 +92,6 @@ async def _call_groq(prompt: str) -> str:
 
 
 async def _call_ollama(prompt: str) -> str:
-    import httpx
     async with httpx.AsyncClient(timeout=60.0) as client:
         for attempt in range(3):
             try:
@@ -106,17 +114,14 @@ async def _call_ollama(prompt: str) -> str:
 
 
 async def _call_llm(prompt: str) -> str:
-    if LLM_BACKEND.lower() == "groq":
-        return await _call_groq(prompt)
-    return await _call_ollama(prompt)
+    return await (_call_groq(prompt) if LLM_BACKEND.lower() == "groq" else _call_ollama(prompt))
 
 
 def _parse_status_insight(response: str) -> tuple[str, str]:
-    lines        = response.strip().splitlines()
     safe_status  = "CAUTION"
     insight_text = response.strip()
 
-    for line in lines:
+    for line in response.strip().splitlines():
         line = line.strip()
         if line.upper().startswith("STATUS:"):
             raw = line.split(":", 1)[1].strip().upper()
@@ -124,197 +129,126 @@ def _parse_status_insight(response: str) -> tuple[str, str]:
                 safe_status = "UNSAFE"
             elif "SAFE" in raw and "CAUTION" not in raw:
                 safe_status = "SAFE"
-            else:
-                safe_status = "CAUTION"
         elif line.upper().startswith("INSIGHT:"):
             insight_text = line.split(":", 1)[1].strip()
 
     return safe_status, insight_text
 
 
-def _build_hourly_predicted_prompt(
-    establishment_name: str,
-    establishment_type: str,
-    barangay_name:      str,
-    hour:               int,
-    prediction_date:    str,
-    co2_ppm:            float,
-    temperature_c:      float,
-    humidity_percent:   float,
+def _resolve_status(co2_ppm: float, hi: float) -> str:
+    if co2_ppm > 1000 or hi > 41:
+        return "UNSAFE"
+    if co2_ppm > 800 or hi > 32:
+        return "CAUTION"
+    return "SAFE"
+
+
+def _fallback_insight_text(
+    name:       str,
+    co2_ppm:    float,
+    temp_c:     float,
+    hi:         float,
+    status:     str,
+    label:      str = "",
 ) -> str:
-    hi       = heat_index(temperature_c, humidity_percent)
-    time_str = f"{hour:02d}:00"
-    return f"""You are an environmental health AI for Naga City, Philippines.
-
-Based on PREDICTED sensor values for a future hour, determine if this location
-will be safe to visit at that time.
-
-ESTABLISHMENT:
-  Name : {establishment_name}
-  Type : {establishment_type}
-  Area : {barangay_name}, Naga City
-
-PREDICTED VALUES FOR {prediction_date} at {time_str}:
-  CO2         : {co2_ppm:.0f} ppm ({co2_risk_level(co2_ppm)})
-  Temperature : {temperature_c:.1f}°C
-  Humidity    : {humidity_percent:.0f}%
-  Heat Index  : {hi:.1f}°C (feels like — {comfort_label(hi)})
-
-SAFETY THRESHOLDS:
-  CO2        : <800 = safe | 800–1000 = caution | >1000 = unsafe
-  Heat Index : <32°C = safe | 32–41°C = caution | >41°C = unsafe
-  Humidity   : <85% = fine | 85–95% = caution | >95% = uncomfortable
-
-YOUR TASK:
-1. Decide: SAFE, CAUTION, or UNSAFE
-2. Write 2 sentences explaining why, mentioning:
-   - {establishment_name} by name
-   - The specific predicted values that drove your decision
-   - A practical tip for visitors at {time_str}
-
-RESPOND IN THIS EXACT FORMAT:
-STATUS: [SAFE or CAUTION or UNSAFE]
-INSIGHT: [your 2 sentence explanation]
-"""
-
-
-def _fallback_hourly_insight(
-    establishment_name: str,
-    co2_ppm:            float,
-    temperature_c:      float,
-    humidity_percent:   float,
-    hour:               int,
-) -> tuple[str, str]:
-    hi          = heat_index(temperature_c, humidity_percent)
-    issues      = []
-    safe_status = "SAFE"
-
+    issues = []
     if co2_ppm > 1000:
-        safe_status = "UNSAFE"
-        issues.append(f"CO2 predicted at {co2_ppm:.0f} ppm")
+        issues.append("the air is very stuffy")
     elif co2_ppm > 800:
-        safe_status = "CAUTION"
-        issues.append(f"CO2 predicted at {co2_ppm:.0f} ppm")
-
+        issues.append("the air is getting a little stuffy")
     if hi > 41:
-        safe_status = "UNSAFE"
-        issues.append(f"heat index predicted at {hi:.1f}°C")
+        issues.append("it feels dangerously hot")
     elif hi > 32:
-        if safe_status != "UNSAFE":
-            safe_status = "CAUTION"
-        issues.append(f"heat index predicted at {hi:.1f}°C")
+        issues.append("it feels quite warm")
 
+    prefix = f"{name}{(' ' + label) if label else ''}"
     if not issues:
-        insight = (
-            f"{establishment_name} at {hour:02d}:00 is predicted to have safe conditions "
-            f"with CO2 at {co2_ppm:.0f} ppm and temperature at {temperature_c:.1f}°C. Safe to visit."
-        )
-    else:
-        rec     = "Avoid if possible." if safe_status == "UNSAFE" else "Proceed with caution."
-        insight = f"{establishment_name} at {hour:02d}:00 is predicted to have concerns: {' and '.join(issues)}. {rec}"
-
-    return safe_status, insight
-
-
-async def generate_hourly_safety_insight(
-    establishment_name: str,
-    establishment_type: str,
-    barangay_name:      str,
-    hour:               int,
-    prediction_date:    str,
-    co2_ppm:            float,
-    temperature_c:      float,
-    humidity_percent:   float,
-) -> tuple[str, str]:
-    try:
-        prompt                    = _build_hourly_predicted_prompt(
-            establishment_name, establishment_type, barangay_name,
-            hour, prediction_date, co2_ppm, temperature_c, humidity_percent,
-        )
-        response                  = await _call_llm(prompt)
-        safe_status, insight_text = _parse_status_insight(response)
-        logger.info(f"Hourly insight [{establishment_name} {hour:02d}:00]: {safe_status} via {LLM_BACKEND}")
-        return safe_status, insight_text
-    except Exception as e:
-        logger.error(f"Hourly insight failed [{establishment_name} {hour:02d}:00]: {e}")
-        return _fallback_hourly_insight(establishment_name, co2_ppm, temperature_c, humidity_percent, hour)
+        return f"{prefix} has fresh air and comfortable temperatures. Safe to visit — enjoy your time there."
+    rec = "It is best to avoid this area if possible." if status == "UNSAFE" else "Please take extra care during your visit."
+    return f"{prefix} has some concerns — {' and '.join(issues)}. {rec} Stay hydrated and take breaks as needed."
 
 
 def _build_safety_prompt(
-    establishment_name: str,
-    establishment_type: str,
-    barangay_name:      str,
-    co2_ppm:            float,
-    temperature_c:      float,
-    humidity_percent:   float,
-    heat_index_c:       float,
+    name:     str,
+    est_type: str,
+    barangay: str,
+    co2_ppm:  float,
+    temp_c:   float,
+    humidity: float,
+    hi:       float,
 ) -> str:
-    return f"""You are an environmental health AI for Naga City, Philippines.
+    return f"""You are a helpful health advisor for residents of Naga City, Philippines.
 
-LIVE sensor readings from {establishment_name}:
+LOCATION: {name} ({est_type}), {barangay}, Naga City
 
-ESTABLISHMENT:
-  Name : {establishment_name}
-  Type : {establishment_type}
-  Area : {barangay_name}, Naga City
-
-CURRENT READINGS (right now):
-  CO2         : {co2_ppm:.0f} ppm ({co2_risk_level(co2_ppm)})
-  Temperature : {temperature_c:.1f}°C
-  Humidity    : {humidity_percent:.0f}%
-  Heat Index  : {heat_index_c:.1f}°C (feels like — {comfort_label(heat_index_c)})
+CURRENT CONDITIONS:
+- CO2 level       : {co2_ppm:.0f} ppm
+- Temperature     : {temp_c:.1f}°C
+- Feels-like temp : {hi:.1f}°C
+- Humidity        : {humidity:.0f}%
 
 THRESHOLDS:
-  CO2        : <800 = safe | 800–1000 = caution | >1000 = unsafe
-  Heat Index : <32°C = safe | 32–41°C = caution | >41°C = unsafe
+- CO2        : <800 = safe | 800–1000 = caution | >1000 = unsafe
+- Heat Index : <32°C = safe | 32–41°C = caution | >41°C = unsafe
+- Humidity   : <85% = fine | 85–95% = caution | >95% = uncomfortable
 
-TASK:
-1. Decide: SAFE, CAUTION, or UNSAFE
-2. Write 2 sentences mentioning {establishment_name} by name,
-   the specific readings, and a practical tip for visitors.
+YOUR TASK:
+1. Decide the safety status: SAFE, CAUTION, or UNSAFE
+2. Write 2–3 sentences in plain English that anyone can understand — not too
+   technical, not too simple. Mention {name} by name, describe how the air
+   and heat feel right now, who should be careful, and give one practical health tip.
 
-FORMAT:
+RESPOND IN THIS EXACT FORMAT:
 STATUS: [SAFE or CAUTION or UNSAFE]
-INSIGHT: [2 sentence explanation]
+INSIGHT: [2–3 sentences in plain, easy-to-understand English]
 """
 
 
-def _fallback_safety_insight(
-    establishment_name: str,
-    establishment_type: str,
-    co2_ppm:            float,
-    temperature_c:      float,
-    humidity_percent:   float,
-    heat_index_c:       float,
-) -> tuple[str, str]:
-    issues      = []
-    safe_status = "SAFE"
+def _build_hourly_prompt(
+    name:            str,
+    est_type:        str,
+    barangay:        str,
+    hour:            int,
+    prediction_date: str,
+    co2_ppm:         float,
+    temp_c:          float,
+    humidity:        float,
+    hi:              float,
+) -> str:
+    time_str = f"{hour:02d}:00"
+    return f"""You are a helpful health advisor for residents of Naga City, Philippines.
 
-    if co2_ppm > 1000:
-        safe_status = "UNSAFE"
-        issues.append(f"CO2 at {co2_ppm:.0f} ppm")
-    elif co2_ppm > 800:
-        safe_status = "CAUTION"
-        issues.append(f"CO2 at {co2_ppm:.0f} ppm")
+LOCATION: {name} ({est_type}), {barangay}, Naga City
+FORECAST FOR: {prediction_date} at {time_str}
 
-    if heat_index_c > 41:
-        safe_status = "UNSAFE"
-        issues.append(f"heat index at {heat_index_c:.1f}°C")
-    elif heat_index_c > 32:
-        if safe_status != "UNSAFE":
-            safe_status = "CAUTION"
-        issues.append(f"heat index at {heat_index_c:.1f}°C")
+PREDICTED CONDITIONS AT {time_str}:
+- CO2 level       : {co2_ppm:.0f} ppm
+- Temperature     : {temp_c:.1f}°C
+- Feels-like temp : {hi:.1f}°C
+- Humidity        : {humidity:.0f}%
 
-    if not issues:
-        insight = (
-            f"{establishment_name} currently has good air quality with CO2 at "
-            f"{co2_ppm:.0f} ppm and temperature at {temperature_c:.1f}°C. Safe to visit."
-        )
-    else:
-        rec     = "Avoid if possible." if safe_status == "UNSAFE" else "Proceed with caution."
-        insight = f"{establishment_name} has concerns: {' and '.join(issues)}. {rec}"
+THRESHOLDS:
+- CO2        : <800 = safe | 800–1000 = caution | >1000 = unsafe
+- Heat Index : <32°C = safe | 32–41°C = caution | >41°C = unsafe
+- Humidity   : <85% = fine | 85–95% = caution | >95% = uncomfortable
 
-    return safe_status, insight
+YOUR TASK:
+1. Decide the safety status: SAFE, CAUTION, or UNSAFE
+2. Write 2–3 sentences in plain English that anyone can understand — not too
+   technical, not too simple. Mention {name} by name, describe how the air
+   and heat are expected to feel at {time_str}, who should be careful, and
+   give one practical health tip.
+
+RESPOND IN THIS EXACT FORMAT:
+STATUS: [SAFE or CAUTION or UNSAFE]
+INSIGHT: [2–3 sentences in plain, easy-to-understand English]
+"""
+
+
+async def _generate(prompt: str, log_tag: str) -> tuple[str, str] | str:
+    response = await _call_llm(prompt)
+    logger.info(f"[{log_tag}] LLM response received via {LLM_BACKEND}")
+    return response
 
 
 async def generate_safety_insight(
@@ -327,20 +261,46 @@ async def generate_safety_insight(
     heat_index_c:       float,
 ) -> tuple[str, str]:
     try:
-        prompt                    = _build_safety_prompt(
+        prompt               = _build_safety_prompt(
             establishment_name, establishment_type, barangay_name,
             co2_ppm, temperature_c, humidity_percent, heat_index_c,
         )
-        response                  = await _call_llm(prompt)
-        safe_status, insight_text = _parse_status_insight(response)
-        logger.info(f"Safety insight [{establishment_name}]: {safe_status}")
-        return safe_status, insight_text
+        response             = await _call_llm(prompt)
+        status, insight      = _parse_status_insight(response)
+        logger.info(f"Safety insight [{establishment_name}]: {status}")
+        return status, insight
     except Exception as e:
         logger.error(f"Safety insight failed [{establishment_name}]: {e}")
-        return _fallback_safety_insight(
-            establishment_name, establishment_type,
-            co2_ppm, temperature_c, humidity_percent, heat_index_c,
+        status  = _resolve_status(co2_ppm, heat_index_c)
+        insight = _fallback_insight_text(establishment_name, co2_ppm, temperature_c, heat_index_c, status)
+        return status, insight
+
+
+async def generate_hourly_safety_insight(
+    establishment_name: str,
+    establishment_type: str,
+    barangay_name:      str,
+    hour:               int,
+    prediction_date:    str,
+    co2_ppm:            float,
+    temperature_c:      float,
+    humidity_percent:   float,
+) -> tuple[str, str]:
+    hi = heat_index(temperature_c, humidity_percent)
+    try:
+        prompt          = _build_hourly_prompt(
+            establishment_name, establishment_type, barangay_name,
+            hour, prediction_date, co2_ppm, temperature_c, humidity_percent, hi,
         )
+        response        = await _call_llm(prompt)
+        status, insight = _parse_status_insight(response)
+        logger.info(f"Hourly insight [{establishment_name} {hour:02d}:00]: {status} via {LLM_BACKEND}")
+        return status, insight
+    except Exception as e:
+        logger.error(f"Hourly insight failed [{establishment_name} {hour:02d}:00]: {e}")
+        status  = _resolve_status(co2_ppm, hi)
+        insight = _fallback_insight_text(establishment_name, co2_ppm, temperature_c, hi, status, f"at {hour:02d}:00")
+        return status, insight
 
 
 async def generate_insight(
@@ -358,22 +318,31 @@ async def generate_insight(
     hum       = float(predicted.get("humidity_percent", 75))
     hi        = heat_index(temp, hum)
 
-    prompt = f"""You are a climate monitoring AI for Naga City, Philippines.
+    prompt = f"""You are a helpful health advisor for residents of Naga City, Philippines.
 
-Write ONE sentence summarizing today's forecast for {sensor_id} in {barangay}:
-- CO2: {co2:.0f} ppm, peaks at {peak_co2_hour:02d}:00
-- Temperature: {temp:.1f}°C, peaks at {peak_temp_hour:02d}:00 (feels like {hi:.1f}°C)
-- Humidity: {hum:.0f}%
+LOCATION: {sensor_id}, {barangay}, Naga City
 
-Write one clear sentence with the key values and one practical recommendation.
+TODAY'S FORECAST:
+- CO2 level       : {co2:.0f} ppm (expected to be worst around {peak_co2_hour:02d}:00)
+- Temperature     : {temp:.1f}°C (expected to peak around {peak_temp_hour:02d}:00)
+- Feels-like temp : {hi:.1f}°C
+- Humidity        : {hum:.0f}%
+
+YOUR TASK:
+Write 2–3 sentences in plain English that anyone can understand — not too
+technical, not too simple. Summarize how the air and heat will feel today,
+when it will be at its worst, and give one practical health tip for residents.
+
+RESPOND IN THIS EXACT FORMAT:
+INSIGHT: [2–3 sentences in plain, easy-to-understand English]
 """
     try:
         return await _call_llm(prompt)
     except Exception as e:
         logger.error(f"Daily insight failed: {e}")
         return (
-            f"{sensor_id} in {barangay}: CO2 forecast {co2:.0f} ppm, "
-            f"temperature peaks {temp:.1f}°C at {peak_temp_hour:02d}:00 "
-            f"(feels like {hi:.1f}°C), humidity {hum:.0f}%."
+            f"INSIGHT: Today in {barangay}, the air may feel a little stuffy around "
+            f"{peak_co2_hour:02d}:00 and the heat will peak at {temp:.1f}°C "
+            f"(feels like {hi:.1f}°C) around {peak_temp_hour:02d}:00. "
+            f"Stay hydrated and avoid staying too long outdoors during the hottest part of the day."
         )
-    
