@@ -376,3 +376,4 @@ Write one clear sentence with the key values and one practical recommendation.
             f"temperature peaks {temp:.1f}°C at {peak_temp_hour:02d}:00 "
             f"(feels like {hi:.1f}°C), humidity {hum:.0f}%."
         )
+    
