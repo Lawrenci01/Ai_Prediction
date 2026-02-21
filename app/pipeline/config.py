@@ -1,7 +1,17 @@
+import os
 from pathlib import Path
 
 BASE_DIR  = Path(__file__).resolve().parent.parent.parent
-DATA_FILE = BASE_DIR / "Manila_HOURLY_20140101_20241231.csv"
+_data_file_env = os.environ.get("DATA_FILE", "")
+DATA_FILE      = Path(_data_file_env) if _data_file_env else BASE_DIR / "Manila_HOURLY_20140101_20241231.csv"
+
+if not DATA_FILE.exists():
+    import warnings
+    warnings.warn(
+        f"DATA_FILE not found: {DATA_FILE}\n"
+        "Set the DATA_FILE environment variable or place the CSV at the expected path.",
+        stacklevel=2,
+    )
 MODEL_DIR = BASE_DIR / "saved_models"
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -49,13 +59,6 @@ MODEL_NAMES = {
     "lstm_co2":                "lstm_co2_ppm.keras",
     "lstm_temperature":        "lstm_temperature_c.keras",
     "lstm_humidity":           "lstm_humidity_percent.keras",
-    "rf_co2":                  "rf_co2_ppm.pkl",
-    "rf_temperature":          "rf_temperature_c.pkl",
-    "rf_humidity":             "rf_humidity_percent.pkl",
-    "xgb_co2":                 "xgb_co2_ppm.pkl",
-    "xgb_temperature":         "xgb_temperature_c.pkl",
-    "xgb_humidity":            "xgb_humidity_percent.pkl",
-    "scaler_X":                "scaler_X.pkl",
     "scaler_co2_ppm":          "scaler_co2_ppm.pkl",
     "scaler_temperature_c":    "scaler_temperature_c.pkl",
     "scaler_humidity_percent": "scaler_humidity_percent.pkl",

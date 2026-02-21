@@ -34,6 +34,7 @@ jobs:
       RETRAIN_HOUR:     ${{ secrets.RETRAIN_HOUR }}
       RETRAIN_MINUTE:   ${{ secrets.RETRAIN_MINUTE }}
       LLM_BACKEND:      ${{ secrets.LLM_BACKEND }}
+      GROQ_API_KEY:     ${{ secrets.GROQ_API_KEY }}
       GROQ_MODEL:       ${{ secrets.GROQ_MODEL }}
       CA_CERT_PATH:     ${{ github.workspace }}/ca.pem
 
@@ -46,6 +47,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: "pip"
+          cache-dependency-path: requirements.txt
 
       - name: Install dependencies
         run: |
@@ -90,6 +92,15 @@ jobs:
           fi
           echo "All required secrets are present."
 
+      - name: Write CA certificate
+        run: |
+          if [ -n "${{ secrets.CA_CERT_BASE64 }}" ]; then
+            echo "${{ secrets.CA_CERT_BASE64 }}" | base64 -d > "${{ github.workspace }}/ca.pem"
+            echo "CA certificate written."
+          else
+            echo "::warning::CA_CERT_BASE64 secret not set — SSL peer verification may fail."
+          fi
+
       - name: Run retrain scheduler
         run: |
           cd $GITHUB_WORKSPACE
@@ -129,8 +140,6 @@ jobs:
           name: retrain-results-${{ github.run_id }}
           path: |
             saved_models/retrain_history.csv
-            saved_models/*.keras
-            saved_models/*.pkl
             logs/
           retention-days: 30
 

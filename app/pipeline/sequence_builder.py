@@ -2,11 +2,9 @@ import numpy as np
 import pandas as pd
 import pickle
 import logging
+from pathlib import Path
 from sklearn.preprocessing import RobustScaler
 
-import sys
-from pathlib import Path
-sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from app.pipeline.config import (
     SEQUENCE_LENGTH, PREDICTION_HORIZON,
     TRAIN_SPLIT, TARGET_COLS, MODEL_DIR, get_model_path
@@ -38,26 +36,17 @@ def time_split(
     train_ratio: float = TRAIN_SPLIT,
     val_ratio:   float = 0.1,
 ) -> dict:
-    n = len(X_seq)
-
-    test_mask        = np.zeros(n, dtype=bool)
-    test_mask[::10]  = True
-
-    remaining_idx    = np.where(~test_mask)[0]
-    val_mask         = np.zeros(n, dtype=bool)
-    val_mask[remaining_idx[::10]] = True
-
-    train_mask = ~test_mask & ~val_mask
-    train_end  = int(train_mask.sum())
-    val_end    = train_end + int(val_mask.sum())
+    n         = len(X_seq)
+    train_end = int(n * train_ratio)
+    val_end   = int(n * (train_ratio + val_ratio))
 
     return {
-        "X_train":   X_seq[train_mask],
-        "y_train":   y_seq[train_mask],
-        "X_val":     X_seq[val_mask],
-        "y_val":     y_seq[val_mask],
-        "X_test":    X_seq[test_mask],
-        "y_test":    y_seq[test_mask],
+        "X_train":   X_seq[:train_end],
+        "y_train":   y_seq[:train_end],
+        "X_val":     X_seq[train_end:val_end],
+        "y_val":     y_seq[train_end:val_end],
+        "X_test":    X_seq[val_end:],
+        "y_test":    y_seq[val_end:],
         "train_end": train_end,
         "val_end":   val_end,
     }
@@ -117,15 +106,33 @@ def build_sequences_for_target(
 def load_scalers(target: str = None) -> tuple:
     scalers_y = {}
     for t in TARGET_COLS:
-        with open(get_model_path(f"scaler_{t}"), "rb") as f:
-            scalers_y[t] = pickle.load(f)
+        path = get_model_path(f"scaler_{t}")
+        try:
+            with open(path, "rb") as f:
+                scalers_y[t] = pickle.load(f)
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Scaler not found for '{t}': {path}. Run train.py first.")
+        except Exception as e:
+            raise RuntimeError(f"Failed to load scaler for '{t}': {e}") from e
 
     if target is not None:
-        with open(_scaler_X_path(target), "rb") as f:
-            scaler_X = pickle.load(f)
+        path = _scaler_X_path(target)
+        try:
+            with open(path, "rb") as f:
+                scaler_X = pickle.load(f)
+        except FileNotFoundError:
+            raise FileNotFoundError(f"scaler_X not found for '{target}': {path}. Run train.py first.")
+        except Exception as e:
+            raise RuntimeError(f"Failed to load scaler_X for '{target}': {e}") from e
     else:
-        with open(get_model_path("scaler_X"), "rb") as f:
-            scaler_X = pickle.load(f)
+        path = get_model_path("scaler_X")
+        try:
+            with open(path, "rb") as f:
+                scaler_X = pickle.load(f)
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Shared scaler_X not found: {path}. Run train.py first.")
+        except Exception as e:
+            raise RuntimeError(f"Failed to load shared scaler_X: {e}") from e
 
     return scaler_X, scalers_y
 

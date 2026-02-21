@@ -5,7 +5,7 @@ import sys
 import pickle
 import numpy as np
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
@@ -26,7 +26,7 @@ logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 logger = logging.getLogger(__name__)
 
 os.makedirs("logs", exist_ok=True)
-log_filename = f"logs/retrain_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.log"
+log_filename = f"logs/retrain_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.log"
 file_handler = logging.FileHandler(log_filename)
 file_handler.setFormatter(logging.Formatter(LOG_FORMAT))
 logging.getLogger().addHandler(file_handler)
@@ -36,7 +36,7 @@ logger.info(f"Log file created: {log_filename}")
 METRICS_REPORT_PATH = "logs/metrics_report.txt"
 
 def _write_metrics_report(results: dict, mode: str, rows_used: int, date_from, date_to):
-    run_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    run_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     lines = [
         "=" * 60,
         f"  RETRAIN METRICS REPORT",
@@ -164,14 +164,14 @@ def get_engine():
 def load_last_30_days() -> pd.DataFrame | None:
     try:
         engine = get_engine()
-        since  = (datetime.utcnow() - timedelta(hours=DATA_FETCH_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
-        query  = f"""
+        since  = datetime.now(timezone.utc) - timedelta(hours=DATA_FETCH_HOURS)
+        query  = text("""
             SELECT recorded_at, co2_density, temperature_c, humidity
             FROM sensor_data
-            WHERE recorded_at >= '{since}'
+            WHERE recorded_at >= :since
             ORDER BY recorded_at ASC
-        """
-        df = pd.read_sql(query, engine)
+        """)
+        df = pd.read_sql(query, engine, params={"since": since})
         logger.info(f"Loaded {len(df):,} rows from sensor_data (last {DATA_FETCH_HOURS}h)")
 
         df = df.rename(columns={
@@ -299,7 +299,7 @@ def run_finetune(df: pd.DataFrame):
                 logger.warning(f"No training sequences for {target}, skipping.")
                 continue
 
-            logger.info(f"Sequences — train: {len(X_train):,}, val: {len(X_val):,}, test: {len(X_test):,}")
+            logger.info(f"Sequences - train: {len(X_train):,}, val: {len(X_val):,}, test: {len(X_test):,}")
 
             model           = load_lstm(target)
             callbacks       = get_callbacks(target)
@@ -358,7 +358,7 @@ def run_finetune(df: pd.DataFrame):
 def _save_retrain_history(df: pd.DataFrame):
     history_path = MODEL_DIR / "retrain_history.csv"
     record = {
-        "retrain_date": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+        "retrain_date": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         "rows_used":    len(df),
         "date_from":    str(df["timestamp"].min()),
         "date_to":      str(df["timestamp"].max()),
@@ -381,21 +381,21 @@ def main():
         logger.error("No mode specified. Use --evaluate-only or --run-now.")
         sys.exit(1)
 
-    logger.info(f"Retrain job started — {datetime.utcnow().isoformat()}")
+    logger.info(f"Retrain job started - {datetime.now(timezone.utc).isoformat()}")
 
     df = load_last_30_days()
     if df is None or df.empty:
         logger.warning("No data loaded from DB. Exiting.")
         sys.exit(1)
 
-    logger.info(f"Data loaded: {len(df):,} rows | {df['timestamp'].min()} → {df['timestamp'].max()}")
+    logger.info(f"Data loaded: {len(df):,} rows | {df['timestamp'].min()} to {df['timestamp'].max()}")
 
     if args.evaluate_only:
         run_evaluate(df)
     elif args.run_now:
         run_finetune(df)
 
-    logger.info(f"Retrain job complete — {datetime.utcnow().isoformat()}")
+    logger.info(f"Retrain job complete - {datetime.now(timezone.utc).isoformat()}")
 
 
 if __name__ == "__main__":

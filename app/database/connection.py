@@ -1,10 +1,15 @@
 ﻿import os
+import sys
+import asyncio
 import ssl as ssl_module
 import logging
 from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 from sqlalchemy import text
+
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -17,9 +22,19 @@ DB_PASS = os.getenv("DB_PASS") or os.getenv("DB_PASSWORD", "")
 
 DATABASE_URL = f"mysql+aiomysql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
-ssl_ctx = ssl_module.create_default_context()
-ssl_ctx.check_hostname = False
-ssl_ctx.verify_mode = ssl_module.CERT_NONE
+CA_CERT_PATH = os.getenv("CA_CERT_PATH", "")
+
+def _build_ssl_ctx() -> ssl_module.SSLContext:
+    ctx = ssl_module.create_default_context()
+    ctx.check_hostname = False
+    if CA_CERT_PATH and os.path.exists(CA_CERT_PATH):
+        ctx.load_verify_locations(CA_CERT_PATH)
+        ctx.verify_mode = ssl_module.CERT_REQUIRED
+        logger.info(f"SSL: using CA cert from {CA_CERT_PATH}")
+    else:
+        ctx.verify_mode = ssl_module.CERT_NONE
+        logger.warning("SSL: CA_CERT_PATH not set or missing — peer verification disabled.")
+    return ctx
 
 engine = create_async_engine(
     DATABASE_URL,
@@ -27,7 +42,7 @@ engine = create_async_engine(
     max_overflow=20,
     pool_pre_ping=True,
     echo=False,
-    connect_args={"ssl": ssl_ctx},
+    connect_args={"ssl": _build_ssl_ctx()},
 )
 
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)

@@ -2,7 +2,7 @@ name: Daily Prediction
 
 on:
   schedule:
-    - cron: "0 17 * * *"
+    - cron: "0 1 * * *"
   workflow_dispatch:
 
 jobs:
@@ -24,47 +24,46 @@ jobs:
       DATA_FETCH_HOURS: ${{ secrets.DATA_FETCH_HOURS }}
       MODEL_DIR:        ${{ secrets.MODEL_DIR }}
       CA_CERT_PATH:     ${{ github.workspace }}/ca.pem
-      SCHEDULER_HOUR:   "1"
-      SCHEDULER_MINUTE: "0"
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
+          cache-dependency-path: requirements.txt
 
       - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
+        run: pip install --upgrade pip && pip install -r requirements.txt
 
       - name: Validate required secrets
         run: |
           missing=()
-          [ -z "$DB_HOST" ] && missing+=("DB_HOST")
-          [ -z "$DB_NAME" ] && missing+=("DB_NAME")
-          [ -z "$DB_USER" ] && missing+=("DB_USER")
-          [ -z "$DB_PASS" ] && missing+=("DB_PASS")
-          [ -z "$DB_PORT" ] && missing+=("DB_PORT")
+          for var in DB_HOST DB_NAME DB_USER DB_PASS DB_PORT GROQ_API_KEY MODEL_DIR; do
+            [ -z "${!var}" ] && missing+=("$var")
+          done
           if [ ${#missing[@]} -gt 0 ]; then
             echo "::error::Missing required secrets: ${missing[*]}"
             exit 1
           fi
-          echo "All required secrets are present."
 
-      - name: Run daily prediction
+      - name: Write CA certificate
         run: |
-          cd $GITHUB_WORKSPACE
-          export PYTHONPATH=$GITHUB_WORKSPACE
-          python -m app.scheduler.daily_scheduler --run-now
+          if [ -n "${{ secrets.CA_CERT_BASE64 }}" ]; then
+            echo "${{ secrets.CA_CERT_BASE64 }}" | base64 -d > "${{ github.workspace }}/ca.pem"
+            echo "CA certificate written."
+          else
+            echo "::warning::CA_CERT_BASE64 secret not set — SSL peer verification may fail."
+          fi
 
-      - name: Upload prediction logs
+      - name: Init DB and run prediction
+        run: |
+          PYTHONPATH=$GITHUB_WORKSPACE python -m app.database.init_db
+          PYTHONPATH=$GITHUB_WORKSPACE python -m app.scheduler.daily_scheduler --run-now
+
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v4
         with:
           name: prediction-logs-${{ github.run_id }}
           path: logs/
@@ -72,5 +71,4 @@ jobs:
 
       - name: Notify on failure
         if: failure()
-        run: |
-          echo "::error::Daily prediction FAILED on $(date -u '+%Y-%m-%d %H:%M UTC')"
+        run: echo "::error::Daily prediction FAILED on $(date -u '+%Y-%m-%d %H:%M UTC')"

@@ -2,10 +2,7 @@ import pandas as pd
 import numpy as np
 import logging
 import pickle
-from pathlib import Path
 
-import sys
-sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from app.pipeline.config import (
     TARGET_COLS, TIMESTAMP_COL,
     USE_CYCLICAL_ENCODING,

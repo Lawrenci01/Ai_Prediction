@@ -1,7 +1,4 @@
 import pandas as pd
-from pathlib import Path
-import sys
-sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 
 def build_current_readings(df: pd.DataFrame) -> dict:
@@ -14,8 +11,11 @@ def build_current_readings(df: pd.DataFrame) -> dict:
 
 
 def build_historical_stats(df: pd.DataFrame, hours: int = 24) -> dict:
-    df    = df.sort_values("timestamp").tail(hours)
-    stats = {}
+    df     = df.copy()
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    cutoff = df["timestamp"].max() - pd.Timedelta(hours=hours)
+    df     = df[df["timestamp"] >= cutoff]
+    stats  = {}
 
     for col in ["co2_ppm", "temperature_c", "humidity_percent"]:
         if col in df.columns:

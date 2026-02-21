@@ -2,11 +2,10 @@ import numpy as np
 import pandas as pd
 import pickle
 import logging
-from datetime import datetime, timedelta
+import time
+from datetime import timedelta
 from pathlib import Path
 
-import sys
-sys.path.append(str(Path(__file__).resolve().parent.parent))
 from app.pipeline.config import (
     TARGET_COLS, SEQUENCE_LENGTH, PREDICTION_HORIZON,
     MODEL_DIR, get_model_path, LOCATION
@@ -16,24 +15,22 @@ from app.pipeline.sequence_builder import inverse_transform_predictions
 
 logger = logging.getLogger(__name__)
 
-
-def get_model_key(prefix: str, target: str) -> str:
+def get_model_key(target: str) -> str:
     if target.startswith("co2"):
-        return f"{prefix}_co2"
+        return "lstm_co2"
     elif target.startswith("temp"):
-        return f"{prefix}_temperature"
+        return "lstm_temperature"
     elif target.startswith("humid"):
-        return f"{prefix}_humidity"
+        return "lstm_humidity"
     else:
         raise ValueError(f"Unknown target: {target}")
-
 
 def get_unit(target: str) -> str:
     if "temp"  in target: return "°C"
     if "humid" in target: return "%"
     if "co2"   in target: return "ppm"
+    logger.warning(f"get_unit: unknown target '{target}' — returning empty unit.")
     return ""
-
 
 def is_model_file_valid(path: str) -> tuple:
     p = Path(path)
@@ -42,7 +39,6 @@ def is_model_file_valid(path: str) -> tuple:
     if p.stat().st_size == 0:
         return False, f"File is empty: {path}"
     return True, "ok"
-
 
 def _load_scaler_X(target: str):
     per_target_path = MODEL_DIR / f"scaler_X_{target}.pkl"
@@ -63,6 +59,7 @@ def _load_scaler_X(target: str):
     logger.error(f"No scaler_X found for target '{target}' — train.py may not have run")
     return None
 
+_MODEL_TTL_SECONDS = 3600
 
 class ModelRegistry:
     _instance = None
@@ -70,12 +67,15 @@ class ModelRegistry:
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-            cls._instance._loaded = {}
+            cls._instance._loaded    = {}
+            cls._instance._load_time = {}
         return cls._instance
 
     def get(self, key: str):
-        if key not in self._loaded:
-            self._loaded[key] = self._load(key)
+        age = time.time() - self._load_time.get(key, 0)
+        if key not in self._loaded or age > _MODEL_TTL_SECONDS:
+            self._loaded[key]    = self._load(key)
+            self._load_time[key] = time.time()
         return self._loaded[key]
 
     def _load(self, key: str):
@@ -110,6 +110,7 @@ class ModelRegistry:
 
     def reload_all(self):
         self._loaded.clear()
+        self._load_time.clear()
         logger.info("Model registry cleared.")
 
     def status(self) -> dict:
@@ -129,12 +130,10 @@ class ModelRegistry:
                 report[key] = {"file": filename, "exists": False, "error": str(e)}
         return report
 
-
 registry = ModelRegistry()
 
-
 def predict_with_lstm(df_featured: pd.DataFrame, target: str) -> dict:
-    model_key    = get_model_key("lstm", target)
+    model_key    = get_model_key(target)
     scaler_y_key = f"scaler_{target}"
 
     model     = registry.get(model_key)
@@ -190,22 +189,18 @@ def predict_with_lstm(df_featured: pd.DataFrame, target: str) -> dict:
         },
     }
 
+def predict_all(df_recent: pd.DataFrame, df_featured: pd.DataFrame) -> dict:
 
-def predict_all(df_recent: pd.DataFrame, df_featured: pd.DataFrame, model_type: str = "lstm") -> dict:
-    results = {}
     last_ts = pd.to_datetime(df_featured["timestamp"].iloc[-1])
-
-    for target in TARGET_COLS:
-        results[target] = predict_with_lstm(df_featured, target)
+    results = {target: predict_with_lstm(df_featured, target) for target in TARGET_COLS}
 
     return {
         "prediction_date": (last_ts + timedelta(days=1)).strftime("%Y-%m-%d"),
         **results,
     }
 
-
 def daily_forecast(df_recent: pd.DataFrame, df_featured: pd.DataFrame) -> dict:
-    raw   = predict_all(df_recent, df_featured, model_type="lstm")
+    raw   = predict_all(df_recent, df_featured)
     clean = {"prediction_date": raw["prediction_date"]}
 
     for target in TARGET_COLS:
